@@ -44,15 +44,15 @@ signals:
     source_fields: [Case.Priority, Case.IsEscalated]
     thresholds:
       medium: "1 escalated case"
-      high: "2+ escalated cases, or any Priority=Critical"
+      high: "2+ escalated cases, or any Priority=High"
 
   - name: champion_departed
     specialist: relationship
-    description: Primary Contact Role's Contact record shows an inactive/departed status.
-    source_fields: [Contact.IsActive, OpportunityContactRole.IsPrimary]
+    description: Primary Contact Role's Contact record shows a departed/former status.
+    source_fields: [Contact.Title, OpportunityContactRole.IsPrimary]
     thresholds:
-      medium: "secondary contact inactive"
-      high: "primary/champion contact inactive"
+      medium: "secondary contact marked departed/former"
+      high: "primary/champion contact marked departed/former"
 
   - name: no_recent_activity
     specialist: relationship

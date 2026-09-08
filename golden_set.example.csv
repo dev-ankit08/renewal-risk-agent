@@ -1,5 +1,7 @@
-account_id,name,arr,renewal_date,as_of,outcome
-ACC-HEALTHY-001,Northwind Robotics,240000,2026-08-29,2026-05-01,renewed
-ACC-STALLED-002,Blue Harbor Logistics,180000,2026-08-29,2026-05-01,downgraded
-ACC-ESCALATING-003,Fernbank Health Systems,410000,2026-08-29,2026-05-01,downgraded
-ACC-CHURNING-004,Ridgeline Materials,95000,2026-08-29,2026-05-01,churned
+"account_id","name","arr","renewal_date","as_of","outcome"
+"001WG00001OsSNbYAN","Northbridge Robotics","240000","2026-11-22","2026-09-08","renewed"
+"001WG00001OsSNjYAN","Blue Harbor Logistics","180000","2026-11-30","2026-09-08","renewed"
+"001WG00001OsSNpYAN","Fernbank Health Systems","410000","2026-12-06","2026-09-08","renewed"
+"001WG00001OsSNvYAN","Ridgeline Materials","95000","2026-12-12","2026-09-08","churned"
+"001WG00001OsSO1YAN","TrueNorth Government Services","225000","2026-12-18","2026-09-08","downgraded"
+"001WG00001OsSO5YAN","Ember and Oak Consulting","172000","2026-11-22","2026-09-08","downgraded"

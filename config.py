@@ -1,45 +1,47 @@
 """
-config.py — the file you edit. Models, MCP toolset, mock-vs-real switch, rates.
+config.py — models, org alias, cost rates. Configure this via a .env file in
+the repo root (copy .env.example -> .env) or real environment variables —
+both work; .env is loaded first via python-dotenv if present, but real env
+vars always take precedence over it.
 """
 import os
+
+from dotenv import load_dotenv
+
+load_dotenv()  # no-op if .env doesn't exist; does not override existing os.environ
 
 # --- Model selection ---------------------------------------------------------
 COORDINATOR_MODEL = "claude-opus-5"   # planner only, no tools
 SPECIALIST_MODEL = "claude-sonnet-5"  # Commercial + Relationship, run in parallel
 SYNTHESIS_MODEL = "claude-opus-5"     # packets only, never raw records
 
-# --- Dry-run switch -----------------------------------------------------------
-# True  -> stub_model.py (canned responses) + MockSalesforce (fixture data). No creds needed.
-# False -> real Anthropic API + MCPSalesforce. Requires the three env vars below.
-# Note: MCPSalesforce isn't wired up yet (see salesforce_client.py), so leave
-# this True and use USE_STUB_MODEL below to call the real Anthropic API
-# against mock Salesforce data instead.
-USE_STUB = os.environ.get("RENEWAL_AGENT_USE_STUB", "true").lower() != "false"
-
-# Model-only stub switch, independent of USE_STUB above. Defaults to whatever
-# USE_STUB is, so existing dry-run/real-run behavior is unchanged unless you
-# set RENEWAL_AGENT_USE_STUB_MODEL explicitly — e.g. real model + mock
-# Salesforce: RENEWAL_AGENT_USE_STUB_MODEL=false with USE_STUB left true.
-USE_STUB_MODEL = os.environ.get("RENEWAL_AGENT_USE_STUB_MODEL", str(USE_STUB)).lower() != "false"
-
+# --- Required configuration ----------------------------------------------------
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
-SALESFORCE_TOKEN = os.environ.get("SALESFORCE_TOKEN")
-SALESFORCE_MCP_URL = os.environ.get("SALESFORCE_MCP_URL")
 
-# --- MCP toolset / allowlist posture ------------------------------------------
-# Only these three tools are ever exposed to a specialist. No write tool
-# exists in this toolset — see salesforce_client.MCPSalesforce, which has no
-# insert/update/delete method — and guard.soql_guard hard-blocks DML as a
-# second, independent layer.
-MCP_ALLOWED_TOOLS = ("soql_query", "get_record", "describe_object")
-MCP_WRITES_ENABLED = False  # do not flip on for this POC
+# Salesforce org alias, already authenticated via the `sf` CLI on this machine.
+# There is no token/URL to configure here — auth is inherited entirely from
+# whatever `sf` CLI session is active. See salesforce_client.py.
+SALESFORCE_ORG_ALIAS = os.environ.get("RENEWAL_AGENT_SF_ORG_ALIAS", "renewalRiskSandbox")
+
+# Explicit opt-in required before querying any org alias other than the known
+# synthetic test sandbox — see salesforce_client.get_client(). Real Salesforce
+# data sent through this pipeline reaches the Anthropic API in specialist
+# prompts; confirm a Zero Data Retention agreement is in place with Anthropic
+# before setting this true for a real org.
+ZDR_CONFIRMED = os.environ.get("RENEWAL_AGENT_ZDR_CONFIRMED", "false").lower() == "true"
 
 # --- Tool budget --------------------------------------------------------------
-# Coordinator sets this per run; specialists stop calling tools once spent.
+# Coordinator sets this per run; currently descriptive only — nothing enforces
+# it yet (no specialist call is capped by it).
 DEFAULT_TOOL_BUDGET_PER_SPECIALIST = 8
 
 # --- As-of window --------------------------------------------------------------
+# Documents the "120 days before renewal" trigger concept. Not currently
+# computed anywhere — run.py always requires an explicit --as-of.
 DEFAULT_LOOKAHEAD_DAYS = 120
+
+# --- sf CLI ----------------------------------------------------------------------
+SF_CLI_TIMEOUT_SECONDS = 60
 
 # --- Cost rates ------------------------------------------------------------------
 # Placeholder $/1M tokens for the POC cost estimate only.

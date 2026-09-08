@@ -1,27 +1,23 @@
 """
-salesforce_client.py — one interface, two implementations.
+salesforce_client.py — one interface, one real implementation.
 
-  MockSalesforce  — reads from mock_salesforce.py. Used for --dry-run and for
-                    local development before real org access is wired up.
-  MCPSalesforce   — calls the Salesforce MCP (soql_query / get_record /
-                    describe_object). Writes are never exposed. Left
-                    non-functional (raises) until SALESFORCE_TOKEN and
-                    SALESFORCE_MCP_URL are set — see config.py.
+SfCliSalesforce shells out to the Salesforce CLI (`sf`), already authenticated
+on this machine against the org alias in config.SALESFORCE_ORG_ALIAS. There is
+no MCP connection and no Salesforce token/URL to configure — auth is whatever
+that `sf` session already has.
 
-Every read from either implementation passes through guard.soql_guard /
-guard.strip_banned_fields first. Specialists (commercial.py-equivalent logic
-in agent.py) never see an unguarded record.
+Every read passes through guard.soql_guard / guard.strip_banned_fields first.
+Specialists never see an unguarded record.
 """
 from __future__ import annotations
 
-import re
+import json
+import shutil
+import subprocess
 from abc import ABC, abstractmethod
 
+import config
 import guard
-import mock_salesforce
-
-_FROM_RE = re.compile(r"\bFROM\s+(\w+)", re.IGNORECASE)
-_ACCOUNT_ID_RE = re.compile(r"AccountId\s*=\s*'([^']+)'", re.IGNORECASE)
 
 
 class SalesforceClient(ABC):
@@ -38,100 +34,123 @@ class SalesforceClient(ABC):
         ...
 
 
-def _extract_object(soql: str) -> str | None:
-    match = _FROM_RE.search(soql)
-    return match.group(1) if match else None
+class SalesforceQueryError(Exception):
+    """Raised when the `sf` CLI itself reports a failure (bad SOQL, org not
+    found, not authenticated, etc.) — carries the org's own error message."""
 
 
-def _extract_account_id(soql: str) -> str | None:
-    match = _ACCOUNT_ID_RE.search(soql)
-    return match.group(1) if match else None
-
-
-def _passes_as_of(record: dict, as_of_date: str) -> bool:
-    """Mirror what the guard-injected WHERE clause would enforce, against
-    the mock data directly (the mock has no real SOQL engine to run the
-    injected clause against)."""
-    violations = guard.audit_leakage([record], as_of_date)
-    return len(violations) == 0
-
-
-class MockSalesforce(SalesforceClient):
-    """Dry-run / local-dev data source. No network, no credentials."""
-
-    def soql_query(self, soql: str, as_of_date: str) -> list[dict]:
-        # Validates read-only + as-of enforceability; raises GuardViolation on DML.
-        guard.soql_guard(soql, as_of_date)
-
-        object_name = _extract_object(soql)
-        account_id = _extract_account_id(soql)
-        if object_name is None:
-            raise ValueError(f"could not parse object name from SOQL: {soql!r}")
-
-        records = (
-            mock_salesforce.records_for(object_name, account_id)
-            if account_id
-            else list(mock_salesforce.OBJECTS.get(object_name, []))
+def _resolve_sf_executable() -> str:
+    path = shutil.which("sf")
+    if not path:
+        raise SalesforceQueryError(
+            "The `sf` (Salesforce CLI) executable was not found on PATH. "
+            "Install it from https://developer.salesforce.com/tools/salesforcecli "
+            "and confirm `sf org list` shows your target org as Connected."
         )
-        records = [r for r in records if _passes_as_of(r, as_of_date)]
+    return path
 
+
+class SfCliSalesforce(SalesforceClient):
+    """The only Salesforce integration in this repo. No mock/live toggle —
+    this is always the real org identified by `org_alias`."""
+
+    def __init__(self, org_alias: str):
+        self.org_alias = org_alias
+        self._sf_path = _resolve_sf_executable()
+
+    def soql_query(self, soql: str, as_of_date: str, date_field: str = "CreatedDate") -> list[dict]:
+        guarded = guard.soql_guard(soql, as_of_date, date_field)
+        result = self._run_sf_json(["data", "query", "--query", guarded])
+        records = result.get("result", {}).get("records", [])
         cleaned = []
         for record in records:
+            record = self._strip_attributes(record)
             safe_record, _stripped = guard.strip_banned_fields(record)
             cleaned.append(safe_record)
         return cleaned
 
     def get_record(self, object_name: str, record_id: str) -> dict | None:
-        for record in mock_salesforce.OBJECTS.get(object_name, []):
-            if record.get("Id") == record_id:
-                safe_record, _stripped = guard.strip_banned_fields(record)
-                return safe_record
-        return None
+        # No as_of_date in this method's signature, so the full soql_guard
+        # (which requires one) doesn't apply here — but the DML block always does.
+        soql = guard.block_dml(f"SELECT FIELDS(ALL) FROM {object_name} WHERE Id = '{record_id}' LIMIT 1")
+        result = self._run_sf_json(["data", "query", "--query", soql])
+        records = result.get("result", {}).get("records", [])
+        if not records:
+            return None
+        record = self._strip_attributes(records[0])
+        safe_record, _stripped = guard.strip_banned_fields(record)
+        return safe_record
 
     def describe_object(self, object_name: str) -> dict:
-        records = mock_salesforce.OBJECTS.get(object_name, [])
-        fields = sorted(records[0].keys()) if records else []
+        result = self._run_sf_json(["sobject", "describe", "--sobject", object_name])
+        fields = [f["name"] for f in result.get("result", {}).get("fields", [])]
         return {"name": object_name, "fields": fields}
 
-
-class MCPSalesforce(SalesforceClient):
-    """
-    Real Salesforce MCP connector. Not functional until SALESFORCE_TOKEN and
-    SALESFORCE_MCP_URL are configured (see config.py) and the MCP tool
-    definitions (soql_query / get_record / describe_object) are wired to an
-    actual MCP client call. Writes are not exposed by design — there is no
-    insert/update/delete method on this class, and guard.soql_guard blocks
-    any DML that somehow reached soql_query anyway.
-    """
-
-    def __init__(self, mcp_url: str | None, token: str | None):
-        self.mcp_url = mcp_url
-        self.token = token
-
-    def _require_connection(self):
-        if not self.mcp_url or not self.token:
-            raise RuntimeError(
-                "MCPSalesforce is not configured. Set SALESFORCE_MCP_URL and "
-                "SALESFORCE_TOKEN, then wire the MCP tool calls in "
-                "salesforce_client.MCPSalesforce. Use --dry-run (MockSalesforce) "
-                "until then."
+    def _run_sf_json(self, args: list[str]) -> dict:
+        full_args = [self._sf_path, *args, "--target-org", self.org_alias, "--json"]
+        try:
+            proc = subprocess.run(
+                full_args,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",  # sf CLI always emits UTF-8 JSON; without this,
+                                   # subprocess decodes with the system locale's
+                                   # preferred encoding (cp1252 on Windows),
+                                   # silently mangling any non-ASCII field value.
+                timeout=config.SF_CLI_TIMEOUT_SECONDS,
+                shell=False,
             )
+        except FileNotFoundError as exc:
+            raise SalesforceQueryError(f"Could not run `sf`: {exc}") from exc
+        except subprocess.TimeoutExpired as exc:
+            raise SalesforceQueryError(
+                f"`sf {' '.join(args)}` timed out after {config.SF_CLI_TIMEOUT_SECONDS}s"
+            ) from exc
 
-    def soql_query(self, soql: str, as_of_date: str) -> list[dict]:
-        guard.soql_guard(soql, as_of_date)  # validate before we ever touch the network
-        self._require_connection()
-        raise NotImplementedError("MCP soql_query call not yet wired — see class docstring.")
+        stdout = proc.stdout or ""
+        try:
+            parsed = json.loads(stdout)
+        except json.JSONDecodeError:
+            brace = stdout.find("{")
+            if brace == -1:
+                raise SalesforceQueryError(
+                    f"`sf {' '.join(args)}` returned no parseable JSON.\n"
+                    f"stdout: {stdout!r}\nstderr: {proc.stderr!r}"
+                )
+            try:
+                parsed = json.loads(stdout[brace:])
+            except json.JSONDecodeError as exc:
+                raise SalesforceQueryError(
+                    f"`sf {' '.join(args)}` returned malformed JSON.\n"
+                    f"stdout: {stdout!r}\nstderr: {proc.stderr!r}"
+                ) from exc
 
-    def get_record(self, object_name: str, record_id: str) -> dict | None:
-        self._require_connection()
-        raise NotImplementedError("MCP get_record call not yet wired — see class docstring.")
+        if parsed.get("status") != 0:
+            message = parsed.get("message") or parsed.get("name") or str(parsed)
+            raise SalesforceQueryError(message)
+        return parsed
 
-    def describe_object(self, object_name: str) -> dict:
-        self._require_connection()
-        raise NotImplementedError("MCP describe_object call not yet wired — see class docstring.")
+    @staticmethod
+    def _strip_attributes(record: dict) -> dict:
+        return {k: v for k, v in record.items() if k != "attributes"}
 
 
-def get_client(use_stub: bool, mcp_url: str | None = None, token: str | None = None) -> SalesforceClient:
-    if use_stub:
-        return MockSalesforce()
-    return MCPSalesforce(mcp_url, token)
+def get_client(org_alias: str | None = None) -> SalesforceClient:
+    """Refuses to run against any org alias other than the known synthetic
+    test sandbox unless config.ZDR_CONFIRMED is set — see config.py. Real
+    Salesforce data reaches the Anthropic API in specialist prompts, so
+    pointing this at a real org is a deliberate, confirmed act, not a
+    side effect of changing an env var."""
+    alias = org_alias or config.SALESFORCE_ORG_ALIAS
+    known_test_aliases = {"renewalRiskSandbox"}
+    if alias not in known_test_aliases and not config.ZDR_CONFIRMED:
+        raise RuntimeError(
+            f"Refusing to query org alias '{alias}' — it isn't the known synthetic "
+            "test sandbox, so it may hold real customer data, which this pipeline "
+            "sends to the Anthropic API in specialist prompts. Confirm your "
+            "Anthropic API organization has a Zero Data Retention agreement in "
+            "place (contact Anthropic to arrange one — this is an account-level "
+            "agreement, not something this codebase can configure), then set "
+            "RENEWAL_AGENT_ZDR_CONFIRMED=true to proceed."
+        )
+    return SfCliSalesforce(alias)

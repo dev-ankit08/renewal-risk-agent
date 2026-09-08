@@ -1,3 +1,4 @@
-pyyaml>=6.0        # signals.yaml — hard dependency, used even in --dry-run
-jsonschema>=4.0     # optional: schemas.py falls back to a built-in validator if absent
-anthropic>=0.40.0   # only needed for real (non --dry-run) model calls
+pyyaml>=6.0          # signals.yaml — hard dependency
+jsonschema>=4.0      # optional: schemas.py falls back to a built-in validator if absent
+anthropic>=0.40.0    # Coordinator/Specialist/Synthesis model calls
+python-dotenv>=1.0.0 # loads .env for ANTHROPIC_API_KEY / RENEWAL_AGENT_SF_ORG_ALIAS

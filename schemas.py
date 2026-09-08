@@ -6,8 +6,7 @@ Two JSON Schemas:
   RISK_ASSESSMENT_SCHEMA  — what Synthesis emits, built only from packets.
 
 `validate(obj, schema)` uses the `jsonschema` package if installed, and falls
-back to a small built-in validator otherwise — so `--dry-run` never needs a
-pip install to exercise the contract.
+back to a small built-in validator otherwise.
 """
 from __future__ import annotations
 

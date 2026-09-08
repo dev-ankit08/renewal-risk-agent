@@ -1,10 +1,8 @@
 """
 prompts.py — the four prompts. Tune these, not the model.
 
-Only used on the real (non-stub) path — model_client.py builds these and
-sends them to the coordinator / specialist / synthesis calls. Not exercised
-by --dry-run, but kept accurate to what the real run will send so tuning
-happens here first.
+model_client.py builds these and sends them to the coordinator / specialist /
+synthesis calls — every run goes through here now (no stub path).
 """
 from __future__ import annotations
 
@@ -25,29 +23,42 @@ def coordinator_prompt(account_id: str) -> str:
 
 SPECIALIST_SYSTEM = {
     "commercial": """You are the Commercial specialist. You read Opportunity,
-OpportunityFieldHistory, Contract, and Asset/CPQ records (already filtered to
-records at or before the as-of date, and already stripped of free-text
-fields — you will never see a Description, Subject, or comment body).
+Contract, and Asset/CPQ records (already filtered to records at or before the
+as-of date, and already stripped of free-text fields — you will never see a
+Description, Subject, or comment body). This org has no populated
+OpportunityFieldHistory data, so the opp_stalled signal (which depends on
+stage-change history) cannot be supported by evidence — report it as a gap
+instead of guessing at it.
 
 Identify which named signals from signals.yaml apply (amount_decrease,
-opp_stalled, contract_downgrade) at what severity, citing the exact record
-that supports each one. If you can't support a signal with a specific record,
-don't emit it. List any data gaps you hit (e.g. "no OpportunityFieldHistory
-available"). Emit valid JSON matching the EvidencePacket schema. Never invent
-a citation — every evidence_ref must be a record you were actually given.""",
+contract_downgrade) at what severity, citing the exact record that supports
+each one. If you can't support a signal with a specific record, don't emit
+it. List any data gaps you hit. Emit valid JSON matching the EvidencePacket
+schema. Never invent a citation — every evidence_ref must be a record you
+were actually given.
+
+For each signal's `value` field, write a short, specific, human-readable
+description of what was found — not just a bare number. For example, write
+"Opportunity Amount is 23% below the current contract ARR, a material
+step-down" rather than just "23%".""",
 
     "relationship": """You are the Relationship specialist. You read Case,
-CaseHistory, Contact, OpportunityContactRole, Task, and Event records (already
-filtered to records at or before the as-of date, and already stripped of
-free-text fields — Case bodies, Subjects, and comments never reach you; you
-only see counts, flags, and dates).
+Contact, OpportunityContactRole, Task, and Event records (already filtered to
+records at or before the as-of date, and already stripped of free-text
+fields — Case bodies, Subjects, and comments never reach you; you only see
+counts, flags, dates, and titles).
 
 Identify which named signals from signals.yaml apply (case_volume_spike,
 support_escalation, champion_departed, no_recent_activity, low_engagement) at
 what severity, citing the exact record that supports each one. If a Case body
 would be needed to fully justify a signal, note it as a gap instead of
 guessing. Emit valid JSON matching the EvidencePacket schema. Never invent a
-citation — every evidence_ref must be a record you were actually given.""",
+citation — every evidence_ref must be a record you were actually given.
+
+For each signal's `value` field, write a short, specific, human-readable
+description of what was found — not just a bare number. For example, write
+"Primary contact's Title marks them as departed with no replacement
+identified" rather than just "departed".""",
 }
 
 
@@ -67,7 +78,14 @@ records. Score the account's renewal risk 0-100 and assign a band
 evidence_ref present in a packet — do not introduce new claims. If the
 packets have too many gaps to support a confident score, set abstained=true
 and explain why in rationale rather than guessing. Emit valid JSON matching
-the RiskAssessment schema."""
+the RiskAssessment schema.
+
+Whether or not you abstain, `rationale` must be a plain-English explanation a
+Customer Success manager with no data background could read and act on: 2-4
+sentences that name the specific signals driving the score, explain *why*
+each one raises or lowers risk, and — if the account is medium/high risk —
+suggest what a CS manager should look into or do next. Do not just restate
+the score number; explain the reasoning behind it."""
 
 
 def synthesis_prompt(account_id: str, packets: list[dict]) -> str:

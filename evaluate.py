@@ -17,9 +17,6 @@ for every account in a golden-set CSV, then runs the gates in order:
           prepares the sample.
 
 Usage: python3 evaluate.py golden_set.csv --k 20
-Expected on --dry-run output: Gate 1 FAILS. The stub model returns a constant
-score (81) for every account, so it has zero discriminative power. That's the
-harness doing its job, not a bug.
 """
 from __future__ import annotations
 
@@ -33,11 +30,16 @@ import sys
 import config
 import guard
 
+# See run.py for why this is necessary on Windows.
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8")
+
 POSITIVE_OUTCOMES = {"churned", "downgraded"}
 
 
 def load_golden(path: str) -> list[dict]:
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         return list(csv.DictReader(f))
 
 
@@ -158,7 +160,7 @@ def write_faithfulness_worksheet(run_data: dict[str, dict], out_path: str = "fai
                     }
                 )
     sample = random.sample(candidates, min(sample_size, len(candidates))) if candidates else []
-    with open(out_path, "w", newline="") as f:
+    with open(out_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=["account_id", "specialist", "signal", "claimed_value", "evidence_ref", "verified_in_salesforce", "notes"])
         writer.writeheader()
         writer.writerows(sample)
@@ -168,7 +170,7 @@ def write_faithfulness_worksheet(run_data: dict[str, dict], out_path: str = "fai
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run the two hard gates + fabrication check against a golden set.")
     parser.add_argument("golden", help="Path to golden-set CSV (account_id,name,arr,renewal_date,as_of,outcome).")
-    parser.add_argument("--k", type=int, default=20, help="k for precision@k (doc default: 20; --dry-run demos often use 5).")
+    parser.add_argument("--k", type=int, default=20, help="k for precision@k.")
     parser.add_argument("--db", default=config.RUNS_DB, help="Path to runs.sqlite.")
     args = parser.parse_args()
 
@@ -193,9 +195,6 @@ def main() -> int:
         f"Gate 1 (precision@{gate1['k']}): {status} — agent={gate1['agent_precision_at_k']:.2f} "
         f"vs baseline={gate1['baseline_precision_at_k']:.2f} (need agent >= 2x baseline), n={gate1['n']}"
     )
-    if not gate1["passed"]:
-        print("  Expected under --dry-run: the stub model returns a constant score for every")
-        print("  account, so it can't discriminate. Wire a real ANTHROPIC_API_KEY to get a real number.")
     print()
 
     # Fabrication check

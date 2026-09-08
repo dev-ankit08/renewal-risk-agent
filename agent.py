@@ -23,13 +23,23 @@ import guard
 import model_client
 import salesforce_client
 
-COMMERCIAL_OBJECTS = ["Opportunity", "OpportunityFieldHistory", "Contract", "Asset"]
-RELATIONSHIP_OBJECTS = ["Case", "CaseHistory", "Contact", "OpportunityContactRole", "Task", "Event"]
+# OpportunityFieldHistory / CaseHistory are deliberately excluded: neither has
+# any populated data for this org's bulk-loaded test records (no real
+# field-change tracking occurred), and CaseHistory is never consumed by any
+# heuristic. Re-add OpportunityFieldHistory if real field-history tracking is
+# ever enabled and opp_stalled needs to be evaluated for real.
+COMMERCIAL_OBJECTS = ["Opportunity", "Contract", "Asset"]
+RELATIONSHIP_OBJECTS = ["Case", "Contact", "OpportunityContactRole", "Task", "Event"]
 
 SPECIALIST_OBJECTS = {
     "commercial": COMMERCIAL_OBJECTS,
     "relationship": RELATIONSHIP_OBJECTS,
 }
+
+# Guardrail: this pipeline must never query Account fields beyond Id/AccountId
+# joins. Account.Renewal_Risk_Profile__c / Account.Expected_Outcome__c are
+# ground-truth test labels (see build_golden_set.py) — reading them here would
+# be the agent answering from the answer key instead of detecting risk itself.
 
 
 def _now_iso() -> str:
@@ -67,10 +77,28 @@ class Ledger:
 def gather_records(client: salesforce_client.SalesforceClient, specialist: str, account_id: str, as_of: str) -> dict[str, list[dict]]:
     """Issue one SOQL query per object this specialist owns. Every call goes
     through the client, which routes it through soql_guard before returning
-    anything."""
-    records = {}
+    anything.
+
+    Real Salesforce has no `SELECT *` — every query names its fields via
+    FIELDS(ALL), which requires an explicit LIMIT (Salesforce caps FIELDS(ALL)
+    queries at 200 rows). Most objects filter directly on AccountId, but
+    OpportunityContactRole has no AccountId field at all — it's reached via a
+    two-step join through this account's own Opportunity Ids."""
+    records: dict[str, list[dict]] = {}
     for object_name in SPECIALIST_OBJECTS[specialist]:
-        soql = f"SELECT * FROM {object_name} WHERE AccountId = '{account_id}'"
+        if object_name == "OpportunityContactRole":
+            # Opportunity is never in the same specialist's object list as
+            # OpportunityContactRole (it's commercial-only), so this is always
+            # a fresh, cheap Id-only lookup, not a full-record re-fetch.
+            opp_soql = f"SELECT Id FROM Opportunity WHERE AccountId = '{account_id}' LIMIT 200"
+            opp_ids = [r["Id"] for r in client.soql_query(opp_soql, as_of)]
+            if not opp_ids:
+                records[object_name] = []
+                continue
+            id_list = ", ".join(f"'{oid}'" for oid in opp_ids)
+            soql = f"SELECT FIELDS(ALL) FROM OpportunityContactRole WHERE OpportunityId IN ({id_list}) LIMIT 200"
+        else:
+            soql = f"SELECT FIELDS(ALL) FROM {object_name} WHERE AccountId = '{account_id}' LIMIT 200"
         records[object_name] = client.soql_query(soql, as_of)
     return records
 
@@ -91,7 +119,7 @@ def run_account(
     client: salesforce_client.SalesforceClient | None = None,
     ledger: Ledger | None = None,
 ) -> RunResult:
-    client = client or salesforce_client.get_client(config.USE_STUB, config.SALESFORCE_MCP_URL, config.SALESFORCE_TOKEN)
+    client = client or salesforce_client.get_client(config.SALESFORCE_ORG_ALIAS)
     ledger = ledger or Ledger()
 
     plan = model_client.call_coordinator(account_id)
@@ -171,13 +199,13 @@ def render_brief(result: RunResult, account_name: str | None = None) -> str:
 def write_brief(result: RunResult, account_name: str | None = None, briefs_dir: str = config.BRIEFS_DIR) -> Path:
     Path(briefs_dir).mkdir(parents=True, exist_ok=True)
     path = Path(briefs_dir) / f"{result.account_id}.md"
-    path.write_text(render_brief(result, account_name))
+    path.write_text(render_brief(result, account_name), encoding="utf-8")
     return path
 
 
 def append_briefs_csv(result: RunResult, account_name: str | None = None, csv_path: str = config.BRIEFS_CSV) -> None:
     file_exists = Path(csv_path).exists()
-    with open(csv_path, "a", newline="") as f:
+    with open(csv_path, "a", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         if not file_exists:
             writer.writerow(["account_id", "account_name", "as_of", "score", "band", "abstained", "leakage_violations"])
