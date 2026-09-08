@@ -3,7 +3,8 @@
 Coordinator → 2 specialists in parallel (Commercial, Relationship) → Synthesis
 → one-page brief. One data source (Salesforce), one MCP connection, no
 billing connector. See `DOCUMENTATION.md` for the full design, gates, and
-order of work.
+order of work — see `FLOW.md` for a code-level trace of exactly what runs,
+in what order, and where each prompt comes from.
 
 ```
 TRIGGER  renewal_date − 120d  (or a golden-set CSV for backtesting)
@@ -41,6 +42,19 @@ says nothing about quality.
 scores 81, so there's no discrimination. That's the harness doing its job,
 not a bug. See `DOCUMENTATION.md` for what a passing run requires.
 
+## Run the real model against mock Salesforce data
+
+`USE_STUB_MODEL` is a separate switch from `USE_STUB` — set only this one to
+call the real Anthropic API while `mock_salesforce.py`'s fixture accounts are
+still used for records:
+
+```
+export ANTHROPIC_API_KEY=sk-ant-...
+export RENEWAL_AGENT_USE_STUB_MODEL=false
+
+python3 run.py --account ACC-CHURNING-004
+```
+
 ## Run it for real
 
 Once you supply Salesforce org / MCP connection details:
@@ -50,6 +64,7 @@ export ANTHROPIC_API_KEY=sk-ant-...
 export SALESFORCE_TOKEN=<short-lived OAuth access token>
 export SALESFORCE_MCP_URL=https://api.salesforce.com/platform/mcp/v1/...
 export RENEWAL_AGENT_USE_STUB=false
+export RENEWAL_AGENT_USE_STUB_MODEL=false
 
 python3 run.py --account 0018c00002LmNqRAAZ --as-of 2026-05-01
 python3 run.py --golden golden_set.csv --concurrency 4
@@ -57,7 +72,10 @@ python3 evaluate.py golden_set.csv --k 20
 ```
 
 No code changes needed for that switch — `config.py` reads the env vars and
-`salesforce_client.py`/`model_client.py` route to the real implementations.
+`model_client.py` routes to the real Anthropic API. `salesforce_client.MCPSalesforce`
+is not wired up yet, though (see its docstring) — its three methods raise
+`NotImplementedError`, so a real run will fail at the first Salesforce fetch
+until those calls are implemented against your MCP connection.
 `salesforce_client.MCPSalesforce`'s three methods currently raise
 `NotImplementedError` with a pointer back to this file — wiring the actual
 MCP tool calls there is the one piece of real integration work left once

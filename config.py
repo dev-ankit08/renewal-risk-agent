@@ -11,7 +11,16 @@ SYNTHESIS_MODEL = "claude-opus-5"     # packets only, never raw records
 # --- Dry-run switch -----------------------------------------------------------
 # True  -> stub_model.py (canned responses) + MockSalesforce (fixture data). No creds needed.
 # False -> real Anthropic API + MCPSalesforce. Requires the three env vars below.
+# Note: MCPSalesforce isn't wired up yet (see salesforce_client.py), so leave
+# this True and use USE_STUB_MODEL below to call the real Anthropic API
+# against mock Salesforce data instead.
 USE_STUB = os.environ.get("RENEWAL_AGENT_USE_STUB", "true").lower() != "false"
+
+# Model-only stub switch, independent of USE_STUB above. Defaults to whatever
+# USE_STUB is, so existing dry-run/real-run behavior is unchanged unless you
+# set RENEWAL_AGENT_USE_STUB_MODEL explicitly — e.g. real model + mock
+# Salesforce: RENEWAL_AGENT_USE_STUB_MODEL=false with USE_STUB left true.
+USE_STUB_MODEL = os.environ.get("RENEWAL_AGENT_USE_STUB_MODEL", str(USE_STUB)).lower() != "false"
 
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
 SALESFORCE_TOKEN = os.environ.get("SALESFORCE_TOKEN")
