@@ -70,6 +70,32 @@ python3 run.py prescreen --account 0018c00002LmNqRAAZ    # heuristic check on on
 model call, no rationale. It's a triage tool, not a replacement for the real
 explained assessment `--account`/`--golden` produce.
 
+## Web UI — for someone who shouldn't have to type CLI commands
+
+```
+python webapp.py
+```
+Then open `http://127.0.0.1:5000` — or just double-click `run_webapp.bat`,
+which does both and never requires opening a terminal after initial setup.
+One text box. Type a plain-English question:
+
+- `is Ridgeline Materials at risk` — resolves the company name, runs the free
+  heuristic screen instantly, and shows a "Get full AI explanation" button
+  for the real, paid, explained assessment (only fires on that explicit click).
+- `accounts at risk this quarter` / `this half year` / `this year` — screens
+  every account with an open renewal in that calendar window and shows a
+  ranked table. **This is genuinely slow at scale** — each account needs
+  ~9 sequential `sf` CLI calls, and each call has real, fixed overhead
+  (confirmed live: a 15-account "this year" screen took ~2m16s even with
+  6-way concurrency). The page says so while it waits; it isn't hung.
+
+Asking a question never costs anything or calls Anthropic — only the
+explicit "Get full AI explanation" button does. See `nlquery.py` for the
+plain-English parsing (regex-based, no NLP library, no Anthropic call) and
+`prescreen.resolve_account_by_name`/`list_renewing_accounts` for the
+underlying queries — both new, both go through the same guarded
+`salesforce_client` path as everything else.
+
 ## Files
 
 | File | What it is |
@@ -84,7 +110,9 @@ explained assessment `--account`/`--golden` produce.
 | `model_client.py` | Anthropic wrapper — always real, no stub. |
 | `salesforce_client.py` | The one real Salesforce client — shells out to the `sf` CLI. |
 | `heuristics.py` | Free, zero-cost signal detection used only by `prescreen.py`. |
-| `prescreen.py` | Bulk/single-account free risk screen — no Anthropic call. |
+| `prescreen.py` | Bulk/single-account free risk screen — no Anthropic call. Also holds `resolve_account_by_name` (company name → Id). |
+| `nlquery.py` | Plain-English question parsing for the web UI — no Anthropic call. |
+| `webapp.py` | Local web UI (`python webapp.py` or `run_webapp.bat`) — one text box, plain English. |
 | `build_golden_set.py` | One-off script: regenerates `golden_set.csv` from the real org's tagged test accounts. |
 | `evaluate.py` | Precision@k vs baseline, fabrication check, faithfulness worksheet. |
 | `run.py` | CLI. |

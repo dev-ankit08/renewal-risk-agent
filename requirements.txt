@@ -2,3 +2,4 @@ pyyaml>=6.0          # signals.yaml — hard dependency
 jsonschema>=4.0      # optional: schemas.py falls back to a built-in validator if absent
 anthropic>=0.40.0    # Coordinator/Specialist/Synthesis model calls
 python-dotenv>=1.0.0 # loads .env for ANTHROPIC_API_KEY / RENEWAL_AGENT_SF_ORG_ALIAS
+flask>=3.0.0         # local web UI (webapp.py) — single-user, no auth, dev server only

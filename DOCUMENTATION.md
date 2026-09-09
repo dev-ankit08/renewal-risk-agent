@@ -1,5 +1,108 @@
 # Renewal Risk Agent — v3 — Documentation
 
+## Part 0 — Plain-English overview: what this does, and what each file is for
+
+**What problem this solves.** A CS team wants to know, for any customer
+account, "is this renewal at risk, and why?" This project answers that two
+ways: an instant free check (just counts and flags things like an escalated
+support case or a shrinking deal size), and a slower, real AI-generated
+explanation (an actual paragraph of reasoning, backed by citations, written
+by Claude) for the accounts worth a closer look.
+
+**The story, in order:**
+1. You ask a question — either by typing a command (`run.py`) or by typing a
+   plain-English sentence into the web page (`webapp.py`).
+2. The tool goes to Salesforce (through the `sf` CLI, already logged in on
+   your machine) and pulls that account's real records — Opportunity,
+   Contract, Case, Contact, Task, etc.
+3. Every one of those records passes through a safety filter (`guard.py`)
+   that strips out free-text fields (Case descriptions, comments) before
+   anything else touches them, and blocks any accidental write.
+4. Then one of two things happens:
+   - **Free path**: fixed rules (`heuristics.py`) check the numbers directly
+     — "is the deal amount down more than 15%?", "has nobody logged an
+     activity in 90+ days?" — and answer instantly, no AI involved.
+   - **Paid path**: three real calls to Claude (a Coordinator, two
+     Specialists, a Synthesis step) read the same guarded records and
+     produce an actual written explanation with a risk score.
+5. The answer is either printed to your terminal, shown on the web page, or
+   (for the paid path) saved as a Markdown brief in `briefs/` plus a row in
+   `briefs.csv` and `runs.sqlite`.
+
+**Every file, grouped by what it's for:**
+
+*How you actually use it (entry points):*
+- **`run.py`** — the command-line tool. `--account`/`--golden` run the real,
+  paid, explained pipeline; `prescreen` runs the free instant check.
+- **`webapp.py`** — the local web page (one text box, plain English). Reuses
+  the exact same functions as `run.py` underneath — it's a second front
+  door, not a separate system.
+- **`run_webapp.bat`** — double-click this to start the web page and open
+  your browser automatically, with zero typing.
+
+*The real, paid, AI-explained pipeline (the "brain"):*
+- **`agent.py`** — the conductor. Given one account, it calls the
+  Coordinator, then the two Specialists, then Synthesis, in order, and
+  writes the final brief.
+- **`model_client.py`** — the only place that actually calls the Anthropic
+  (Claude) API.
+- **`prompts.py`** — the exact instructions sent to Claude at each step. If
+  you want to change how the AI reasons or writes its explanation, this is
+  the file to edit.
+- **`schemas.py`** — the strict shape every AI response must match (a score,
+  a band, cited drivers, a rationale) — rejects anything that doesn't fit.
+
+*The free, instant, no-AI path:*
+- **`prescreen.py`** — looks up an account by name or by renewal date range,
+  then runs the free check on it.
+- **`heuristics.py`** — the actual fixed rules the free check uses (the
+  thresholds — "more than 15% down", "90+ days quiet" — live here).
+- **`nlquery.py`** — turns a typed sentence like "is Acme at risk" or
+  "accounts at risk this quarter" into a structured request the code above
+  can act on. No AI used for this — just pattern matching.
+
+*Talking to Salesforce, safely:*
+- **`salesforce_client.py`** — the only file that actually shells out to the
+  `sf` CLI to run a Salesforce query. Also refuses to touch any org except
+  the known test sandbox unless you explicitly confirm you've handled data
+  privacy (the ZDR gate — see Part 6).
+- **`guard.py`** — the safety net every single Salesforce read passes
+  through: blocks writes, enforces "don't look at data from after this
+  date" (so a backtest can't cheat), and strips free-text fields.
+
+*Configuration:*
+- **`config.py`** — model names, which Salesforce org to use, cost rates.
+  The file (or `.env`) you actually edit.
+- **`.env.example`** — copy this to `.env` and put your real Anthropic API
+  key in it.
+- **`requirements.txt`** — the Python packages this needs (`pip install -r
+  requirements.txt`).
+
+*Testing, sample data, and grading the AI's work:*
+- **`test_guard.py`** — 12 automated tests for the safety-net file above.
+  Should always pass.
+- **`build_golden_set.py`** — a one-off script that pulls the 34 test
+  accounts (each pre-labeled "should be healthy" / "should be churning"
+  etc.) out of the sandbox org into a CSV, so you can check whether the
+  AI's answers match what's actually true.
+- **`golden_set.csv` / `golden_set.example.csv`** — that CSV (the real one
+  is gitignored; the example is a small, safe-to-share sample of it).
+- **`evaluate.py`** — grades a batch of runs against the golden set: is the
+  AI actually better than just "flag the biggest accounts", and did it ever
+  cite evidence it wasn't given (a fabrication check)?
+
+*Reference data:*
+- **`signals.yaml`** — a human-readable list of the named risk signals (like
+  `amount_decrease`, `champion_departed`) and their severity thresholds,
+  meant to be reviewed/owned by a CS ops person, not just a developer.
+
+*Documentation (you are here):*
+- **`README.md`** — the quick-start: setup and the exact commands to run.
+- **`FLOW.md`** — a precise, code-level trace of exactly what calls what, in
+  what order, for anyone who wants to follow the wiring.
+- **`DOCUMENTATION.md`** — this file: the fuller design rationale, gates,
+  and gotchas.
+
 ## Part 1 — What this is
 
 A multi-agent pipeline that, given a Salesforce account and an as-of date,
@@ -145,6 +248,18 @@ Common errors:
   PATH** — install the Salesforce CLI
   (https://developer.salesforce.com/tools/salesforcecli) and confirm
   `sf org list` shows your target alias as Connected.
+- **Garbled characters (`â€”` instead of `—`) in a value pulled from
+  Salesforce, on Windows** — already fixed in `salesforce_client.py` (the
+  `sf` CLI subprocess call now explicitly decodes as UTF-8 instead of the
+  system locale's default codepage) and in `run.py`/`evaluate.py`/
+  `build_golden_set.py` (stdout is reconfigured to UTF-8 at startup). If you
+  see this after modifying those files, you likely removed one of those
+  fixes — see FLOW.md §9.
+- **A bulk `prescreen --renewals-before` run prints `SKIPPED <account_id>: ...
+  timed out`** — this is expected, occasional real-world `sf` CLI flakiness
+  under sustained sequential load, not a code bug; that account was skipped,
+  not silently dropped, and the rest of the screen still completes. Re-run
+  `prescreen --account <id>` on the skipped account alone if you need it.
 
 ## Part 6 — Two things not to defer
 
@@ -212,3 +327,41 @@ natural next step now that every call is real.
   for the documented three-method tool surface and direct-lookup/debugging use.
 - **`opp_stalled`** — not evaluable against this org's bulk-loaded test data
   (see Part 1). Always reported as a declared gap, never guessed at.
+- **`prescreen_bulk`'s sequential `sf` CLI calls** — screening N accounts
+  issues on the order of 9×N subprocess calls, one at a time; at real-world
+  volume (confirmed live at 34 accounts) this takes a few minutes and one
+  call occasionally times out under sustained load. Handled by
+  per-account try/except (skip and continue, see FLOW.md §4), not by making
+  the calls faster or parallel — a straightforward follow-up if `prescreen`
+  needs to run against hundreds of accounts routinely.
+
+## Part 10 — Validated against the real sandbox (not just designed)
+
+This pivot was verified end-to-end against the real `renewalRiskSandbox` org,
+not just written and assumed correct:
+
+- `test_guard.py`: 12/12 pass, unchanged.
+- `run.py prescreen --account <id>` run against one account from each of the
+  6 test risk profiles: Healthy correctly returns zero signals; Churning
+  correctly returns all 6 expected signals (`amount_decrease`,
+  `contract_downgrade`, `support_escalation`, `champion_departed`,
+  `low_engagement`, `no_recent_activity`) with accurate, specific values (e.g.
+  "Opportunity Amount ($70,300) is 26% below the current contract ARR
+  ($95,000)"); Escalating correctly returns exactly `case_volume_spike` +
+  `support_escalation` and nothing else — confirming the commercial/
+  relationship signal isolation the test data was designed to exercise
+  actually holds.
+- `run.py prescreen --renewals-before <date>` (bulk) run against the full set
+  of real open renewals in the org.
+- The `OpportunityContactRole` two-step join, the `FIELDS(ALL)` + `LIMIT 200`
+  SOQL shape, the guard-injected as-of clause combined with both of those,
+  and the `Account.Renewal_Risk_Profile__c`/`Expected_Outcome__c` query
+  `build_golden_set.py` uses were all independently confirmed working via
+  direct `sf data query` calls before being wired into the Python code.
+
+Not yet run end-to-end: a full `--account`/`--golden` invocation (the real
+Anthropic-calling path) — `prescreen`'s heuristic path was verified instead
+to avoid incurring real API cost during this pass. The Anthropic call itself
+(`model_client._call_structured`) is unchanged from before this pivot except
+for the removed stub branch, so it's lower-risk, but hasn't been exercised
+live.

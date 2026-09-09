@@ -13,13 +13,16 @@ answers "if I run this, what actually executes, in what order, from where."
 | Full, explained pipeline, one account | `py run.py --account <id> --as-of <date>` | `ANTHROPIC_API_KEY` + an authenticated `sf` CLI session |
 | Full pipeline, batch/backtest | `py run.py --golden golden_set.csv --concurrency 4` | same |
 | Free heuristic screen, no Anthropic call | `py run.py prescreen --renewals-before <date>` or `--account <id>` | just an authenticated `sf` CLI session |
+| Plain-English question, no CLI at all | `py webapp.py` (or `run_webapp.bat`), then a browser | same as above; Anthropic key only needed if the "Get full AI explanation" button is clicked |
 
-There is no mock/stub mode — every invocation is real. `run.py` is the one
-and only pipeline entry point (`evaluate.py` and `test_guard.py` are
-separate, standalone tools you run around it: `evaluate.py` reads
-`runs.sqlite` after `run.py` has produced data, it does not re-run the
-pipeline; `test_guard.py` tests `guard.py` in isolation and needs neither
-Anthropic nor Salesforce).
+There is no mock/stub mode — every invocation is real. `run.py` is the CLI
+pipeline entry point; `webapp.py` is a second, independent entry point (see
+§9) that reuses the exact same `prescreen.py`/`agent.py` functions rather
+than calling `run.py` — there is no subprocess/HTTP hop between them.
+`evaluate.py` and `test_guard.py` are separate, standalone tools you run
+around all of this (`evaluate.py` reads `runs.sqlite` after a run has
+produced data, it does not re-run the pipeline; `test_guard.py` tests
+`guard.py` in isolation and needs neither Anthropic nor Salesforce).
 
 ## 2. Entry point — [run.py](run.py)
 
@@ -114,6 +117,15 @@ never calls into `heuristics.py`. Use `prescreen` to narrow down which
 accounts are worth a real, explained pipeline run; use `--account`/`--golden`
 for the actual explained assessment.
 
+**Per-account resilience:** `prescreen_bulk` screens accounts sequentially —
+each one issues several `sf` CLI subprocess calls, and at real-world volume
+(confirmed live: 25+ accounts in one run) a single call can occasionally hang
+and hit `config.SF_CLI_TIMEOUT_SECONDS`. `prescreen_bulk` catches
+`salesforce_client.SalesforceQueryError` per account, prints `SKIPPED
+<account_id> (<name>): <error>` to stderr, and continues — one flaky account
+never aborts the whole screen. This mirrors `run.py`'s `run_golden`, which
+already does the same thing for full-pipeline batch runs.
+
 ## 5. Where each prompt comes from — [prompts.py](prompts.py)
 
 `prompts.py` is the **only** prompt source in the repo — there's no
@@ -188,3 +200,64 @@ by the real-Salesforce pivot — it was already data-source-agnostic.
 There is no Salesforce token/URL/MCP setting anywhere in this design — auth
 is entirely inherited from the `sf` CLI session on whatever machine runs this
 code.
+
+## 9. The web UI — [webapp.py](webapp.py) / [nlquery.py](nlquery.py)
+
+```
+GET  /          -> INDEX_HTML (one text box, vanilla JS, no framework/CDN)
+POST /ask       -> nlquery.parse_intent(question)
+                     -> "single_account" -> nlquery.answer_single_account()
+                          -> prescreen.resolve_account_by_name()  [NEW — company name -> Account Id]
+                          -> prescreen.prescreen_account()         [same free-tier function run.py's
+                                                                     `prescreen --account` already uses]
+                     -> "bulk_window"    -> nlquery.answer_bulk_window()
+                          -> nlquery.resolve_window(period)         [calendar-based, pure]
+                          -> prescreen.list_renewing_accounts(before, after)  [after= is new]
+                          -> prescreen.prescreen_bulk(before, after, max_accounts, max_workers)
+                                                                     [max_accounts/max_workers are new;
+                                                                      max_workers>1 uses a ThreadPoolExecutor,
+                                                                      same pattern run.py --golden uses]
+POST /explain   -> agent.run_account()   -- the ONLY route that calls Anthropic / costs real money.
+                     Only reachable from a second, explicit button shown after a single_account
+                     result — never from /ask, including bulk queries.
+```
+
+`webapp.py` calls straight into `prescreen.py`/`agent.py` — there is no
+separate server process or HTTP call between the web layer and the pipeline;
+it's the same Python process, same functions, same `salesforce_client.get_client()`
+ZDR gate, same guard chokepoint as the CLI path. Account name resolution
+(`resolve_account_by_name`) is the first place in this codebase where
+free-typed user text reaches a SOQL string literal — see `prescreen._escape_soql_string`.
+
+**Confirmed live, not estimated:** a "this year" bulk screen (15 accounts,
+capped, `max_workers=6`) took 2m16s — each account needs ~9 sequential `sf`
+CLI subprocess calls, and each call has real fixed overhead (~3-4s) dominated
+by CLI/Node startup, not data volume. Concurrency helps (25 accounts at
+`max_workers=4` took 4m29s before tuning) but doesn't make this fast — the
+UI sets that expectation explicitly rather than implying an instant answer.
+
+## 10. Windows encoding — two real bugs found by actually running this on Windows
+
+Both confirmed live (not theoretical) and fixed:
+
+- **`SfCliSalesforce._run_sf_json`** calls `subprocess.run(..., text=True)`.
+  Without an explicit `encoding`, Python decodes the child process's stdout
+  using the system locale's preferred encoding — `cp1252` on this Windows
+  setup, not UTF-8. The `sf` CLI always emits UTF-8 JSON, so any non-ASCII
+  field value (an em-dash in a `Contact.Title`, for example) got silently
+  double-mis-decoded into mojibake (`—` became `â€”`) even though the data in
+  Salesforce itself was correct. Fixed by passing `encoding="utf-8"`
+  explicitly to `subprocess.run`.
+- **Console output** (`print()` in `run.py`/`evaluate.py`/`build_golden_set.py`)
+  hits the same problem in reverse: Windows terminals often default `sys.stdout`
+  to the legacy console codepage. All three entry points now call
+  `sys.stdout.reconfigure(encoding="utf-8")` (guarded by
+  `hasattr(stream, "reconfigure")`) at import time to force UTF-8 regardless
+  of the environment.
+- File writes (`agent.write_brief`, `agent.append_briefs_csv`,
+  `evaluate.load_golden`/`write_faithfulness_worksheet`,
+  `build_golden_set.py`'s CSV writes, `run.py`'s golden-set CSV read) all now
+  pass `encoding="utf-8"` explicitly rather than relying on the platform
+  default — `agent.render_brief` includes a `⚠` glyph in its leakage-violation
+  section, which would otherwise raise `UnicodeEncodeError` on a Windows
+  default encoding that can't represent it.
