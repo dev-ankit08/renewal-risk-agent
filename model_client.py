@@ -61,16 +61,26 @@ def call_coordinator(account_id: str) -> dict:
 def call_specialist(role: str, account_id: str, as_of: str, records: dict) -> dict:
     client = _real_client()
     prompt = prompts.specialist_prompt(role, account_id, as_of, records)
-    packet = _call_structured(client, config.SPECIALIST_MODEL, prompt, schemas.EVIDENCE_PACKET_SCHEMA)
-
-    schemas.validate(packet, schemas.EVIDENCE_PACKET_SCHEMA)
-    return packet
+    for attempt in (1, 2):
+        packet = _call_structured(client, config.SPECIALIST_MODEL, prompt, schemas.EVIDENCE_PACKET_SCHEMA)
+        try:
+            schemas.validate(packet, schemas.EVIDENCE_PACKET_SCHEMA)
+            return packet
+        except schemas.SchemaValidationError:
+            if attempt == 2:
+                raise
+            # Forced tool-use output occasionally omits a required field
+            # (confirmed live: ~1 in 10 calls) — one retry clears it.
 
 
 def call_synthesis(account_id: str, packets: list[dict]) -> dict:
     client = _real_client()
     prompt = prompts.synthesis_prompt(account_id, packets)
-    assessment = _call_structured(client, config.SYNTHESIS_MODEL, prompt, schemas.RISK_ASSESSMENT_SCHEMA)
-
-    schemas.validate(assessment, schemas.RISK_ASSESSMENT_SCHEMA)
-    return assessment
+    for attempt in (1, 2):
+        assessment = _call_structured(client, config.SYNTHESIS_MODEL, prompt, schemas.RISK_ASSESSMENT_SCHEMA)
+        try:
+            schemas.validate(assessment, schemas.RISK_ASSESSMENT_SCHEMA)
+            return assessment
+        except schemas.SchemaValidationError:
+            if attempt == 2:
+                raise

@@ -2,10 +2,10 @@
 
 Coordinator → 2 specialists in parallel (Commercial, Relationship) → Synthesis
 → one-page brief, with a real, explained rationale. One real data source
-(Salesforce, via the `sf` CLI), one real model (Anthropic), no billing
-connector, no mock/stub mode. See `DOCUMENTATION.md` for the full design and
-gates — see `FLOW.md` for a code-level trace of exactly what runs, in what
-order, and where each prompt comes from.
+(Salesforce, via the official Salesforce MCP server), one real model
+(Anthropic), no billing connector, no mock/stub mode. See `DOCUMENTATION.md`
+for the full design and gates — see `FLOW.md` for a code-level trace of
+exactly what runs, in what order, and where each prompt comes from.
 
 ```
 TRIGGER  an account Id + as-of date (or a golden-set CSV for backtesting)
@@ -36,12 +36,17 @@ Two things to configure, and nothing else:
 
 1. **`ANTHROPIC_API_KEY`** in `.env` (or exported in your shell). Required for
    every Coordinator/Specialist/Synthesis call — there is no stub fallback.
-2. **A `sf` CLI session already authenticated** against your target org. This
-   project has **no Salesforce MCP connection and no Salesforce token/URL to
-   configure** — auth is inherited entirely from whatever org your `sf` CLI
-   session already points at (default alias: `renewalRiskSandbox`; override
-   with `RENEWAL_AGENT_SF_ORG_ALIAS`). If `sf org list` doesn't show your org
-   as Connected, run `sf org login web --alias <your-alias>` once.
+2. **A `sf` CLI session already authenticated** against your target org, plus
+   **Node.js (with `npm`/`npx`) on PATH**. Salesforce reads go through the
+   official Salesforce MCP server (`@salesforce/mcp`, launched automatically
+   via `npx` — no separate install step), which reuses your existing `sf`
+   session for auth. **No Salesforce token/client id/secret to configure** —
+   default org alias: `renewalRiskSandbox`; override with
+   `RENEWAL_AGENT_SF_ORG_ALIAS`. If `sf org list` doesn't show your org as
+   Connected, run `sf org login web --alias <your-alias>` once. The first
+   query in a fresh process is slower while `npx` resolves/caches the MCP
+   server package; subsequent ones are fast (a persistent connection is kept
+   open, not respawned per query — see `salesforce_client.py`).
 
 If you plan to point this at a real (non-test) org, read the ZDR note in
 `DOCUMENTATION.md` first — real Salesforce field data reaches the Anthropic
@@ -68,7 +73,9 @@ python3 run.py prescreen --account 0018c00002LmNqRAAZ    # heuristic check on on
 
 `prescreen` uses `heuristics.py` — fixed thresholds over real records, no
 model call, no rationale. It's a triage tool, not a replacement for the real
-explained assessment `--account`/`--golden` produce.
+explained assessment `--account`/`--golden` produce. (This is the only place
+in the codebase that still uses the free heuristic path — the web UI below
+always calls the real pipeline.)
 
 ## Web UI — for someone who shouldn't have to type CLI commands
 
@@ -77,24 +84,25 @@ python webapp.py
 ```
 Then open `http://127.0.0.1:5000` — or just double-click `run_webapp.bat`,
 which does both and never requires opening a terminal after initial setup.
-One text box. Type a plain-English question:
+One text box. Type a plain-English question — **every answer is real**: both
+question types call the full Coordinator→Specialists→Synthesis pipeline
+(`agent.run_account`), the same one `run.py --account` uses. There is no
+free/instant tier on this page (see `run.py prescreen` below for that).
 
-- `is Ridgeline Materials at risk` — resolves the company name, runs the free
-  heuristic screen instantly, and shows a "Get full AI explanation" button
-  for the real, paid, explained assessment (only fires on that explicit click).
-- `accounts at risk this quarter` / `this half year` / `this year` — screens
-  every account with an open renewal in that calendar window and shows a
-  ranked table. **This is genuinely slow at scale** — each account needs
-  ~9 sequential `sf` CLI calls, and each call has real, fixed overhead
-  (confirmed live: a 15-account "this year" screen took ~2m16s even with
-  6-way concurrency). The page says so while it waits; it isn't hung.
+- `is Ridgeline Materials at risk` — resolves the company name (free, no AI —
+  just a name lookup), then runs the real pipeline and shows the actual
+  score/band/rationale/drivers. Takes ~15-30s, costs real Anthropic tokens.
+- `accounts at risk this quarter` / `this half year` / `this year` — finds
+  every account with an open renewal in that calendar window (free lookup),
+  then runs the real pipeline on each one (capped, currently 10 accounts per
+  question) and shows a ranked table with an estimated cost banner; click a
+  row to expand its full explanation. This can take a few minutes for a full
+  window — the page says so while it waits.
 
-Asking a question never costs anything or calls Anthropic — only the
-explicit "Get full AI explanation" button does. See `nlquery.py` for the
-plain-English parsing (regex-based, no NLP library, no Anthropic call) and
-`prescreen.resolve_account_by_name`/`list_renewing_accounts` for the
-underlying queries — both new, both go through the same guarded
-`salesforce_client` path as everything else.
+See `nlquery.py` for the plain-English parsing (regex-based, no NLP library,
+no Anthropic call for parsing itself) and `prescreen.resolve_account_by_name`/
+`list_renewing_accounts` for the free account-lookup queries both question
+types still use before handing off to the real pipeline.
 
 ## Files
 
@@ -108,11 +116,11 @@ underlying queries — both new, both go through the same guarded
 | `agent.py` | Orchestrator, ledger, brief rendering. |
 | `config.py` | Models, org alias, rates, ZDR gate. The file you edit (or `.env`). |
 | `model_client.py` | Anthropic wrapper — always real, no stub. |
-| `salesforce_client.py` | The one real Salesforce client — shells out to the `sf` CLI. |
-| `heuristics.py` | Free, zero-cost signal detection used only by `prescreen.py`. |
-| `prescreen.py` | Bulk/single-account free risk screen — no Anthropic call. Also holds `resolve_account_by_name` (company name → Id). |
-| `nlquery.py` | Plain-English question parsing for the web UI — no Anthropic call. |
-| `webapp.py` | Local web UI (`python webapp.py` or `run_webapp.bat`) — one text box, plain English. |
+| `salesforce_client.py` | The one real Salesforce client — a persistent connection to the official Salesforce MCP server (`@salesforce/mcp`, via `npx`). |
+| `heuristics.py` | Free, zero-cost signal detection — used only by `run.py prescreen` (the CLI's free-tier command). |
+| `prescreen.py` | `run.py prescreen`'s free risk screen, plus `resolve_account_by_name`/`list_renewing_accounts` (account lookups the web UI also reuses). |
+| `nlquery.py` | Plain-English question parsing for the web UI, and orchestrates the real pipeline for both question types. |
+| `webapp.py` | Local web UI (`python webapp.py` or `run_webapp.bat`) — one text box, plain English, always real/explained answers. |
 | `build_golden_set.py` | One-off script: regenerates `golden_set.csv` from the real org's tagged test accounts. |
 | `evaluate.py` | Precision@k vs baseline, fabrication check, faithfulness worksheet. |
 | `run.py` | CLI. |

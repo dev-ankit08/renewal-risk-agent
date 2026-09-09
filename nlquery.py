@@ -1,22 +1,27 @@
 """
 nlquery.py — plain-English question parsing and answer orchestration for the
-web UI (webapp.py). No Anthropic call, no NLP library — regex-based on
-purpose, since intent parsing must stay in the free tier and be instant.
+web UI (webapp.py). No NLP library for parsing (regex-based, instant, free) —
+but both question shapes now trigger the REAL Coordinator->Specialists->
+Synthesis pipeline (agent.run_account), not a heuristic screen. Every answer
+from the web UI costs real Anthropic tokens and real time; the free heuristic
+path (heuristics.py/prescreen.prescreen_account/prescreen_bulk) remains used
+only by run.py's separate `prescreen` CLI command, not by this module.
 
 Two question shapes are recognized:
   "is <company> at risk"                    -> single_account
   "accounts at risk this quarter/half/year"  -> bulk_window
-
-Everything here calls through prescreen.py's existing, already-guarded
-functions — this module builds no SOQL itself.
 """
 from __future__ import annotations
 
 import calendar
 import re
+import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date
 
+import agent
 import prescreen
+import salesforce_client
 
 PERIOD_ALIASES = {
     "quarter": "quarter", "qtr": "quarter", "quater": "quarter",  # "quater" is a
@@ -93,35 +98,80 @@ def resolve_window(period: str, today: date | None = None) -> tuple[date, date]:
 
 
 def answer_single_account(company_name: str, client=None) -> dict:
-    """Resolves a company name to an Account, then runs the free heuristic
-    screen. Raises prescreen.AccountLookupError on 0/ambiguous matches."""
+    """Resolves a company name to an Account (free, no AI — just a name
+    lookup), then runs the REAL Coordinator->Specialists->Synthesis pipeline
+    on it. Raises prescreen.AccountLookupError on 0/ambiguous matches before
+    any Anthropic call happens."""
+    client = client or salesforce_client.get_client()
     account = prescreen.resolve_account_by_name(company_name, client)
-    today = date.today().isoformat()
-    result = prescreen.prescreen_account(account["account_id"], today, client)
-    result["account_id"] = account["account_id"]
-    result["account_name"] = account["name"]
-    return result
+    as_of = date.today().isoformat()
+    result = agent.run_account(account["account_id"], as_of, client=client)
+    agent.write_brief(result, account["name"])
+    agent.append_briefs_csv(result, account["name"])
+    a = result.assessment
+    return {
+        "account_id": account["account_id"],
+        "account_name": account["name"],
+        "score": a["score"],
+        "band": a["band"],
+        "abstained": a["abstained"],
+        "drivers": a["drivers"],
+        "rationale": a["rationale"],
+        "citations": a["citations"],
+        "leakage_violations": result.leakage_violations,
+    }
 
 
-def answer_bulk_window(period: str, max_accounts: int = 15, max_workers: int = 6) -> dict:
-    """Screens accounts renewing within the calendar window for `period`.
+def answer_bulk_window(period: str, max_accounts: int = 10, max_workers: int = 3) -> dict:
+    """Screens every account renewing within the calendar window for `period`
+    through the REAL pipeline — real cost, real time, per account.
 
-    Each account needs ~9 sequential `sf` CLI subprocess calls (one per
-    Salesforce object plus a join lookup), and each call has real, fixed
-    overhead (confirmed live: ~3-4s, dominated by CLI/Node startup, not data
-    size) — screening is genuinely slow at scale, not something a bigger
-    thread pool fully solves. Defaults tuned from an observed live run: 25
-    accounts at max_workers=4 took 4m29s; max_accounts=15/max_workers=6 is a
-    deliberate trade-off between wait time and how many results a "this
-    year" style query actually returns, not an arbitrary guess."""
+    Finding which accounts are in the window (prescreen.list_renewing_accounts)
+    stays free/unrelated. Each matching account then gets a full
+    agent.run_account() call. The underlying Salesforce MCP connection
+    serializes all reads through one lock (see salesforce_client.py) — so
+    concurrency here doesn't speed up the Salesforce-query portion of each
+    account, but the 4 real Anthropic calls per account (Coordinator, 2
+    specialists, Synthesis) run genuinely in parallel across threads, which is
+    where most of each account's ~15-30s actually goes. max_accounts caps
+    real spend/latency (~$0.32/account placeholder rate) for one question."""
     start, end = resolve_window(period)
-    total_matching = len(prescreen.list_renewing_accounts(end.isoformat(), start.isoformat()))
-    results = prescreen.prescreen_bulk(
-        before_date=end.isoformat(),
-        after_date=start.isoformat(),
-        max_accounts=max_accounts,
-        max_workers=max_workers,
-    )
+    client = salesforce_client.get_client()
+    accounts = prescreen.list_renewing_accounts(end.isoformat(), start.isoformat(), client)
+    total_matching = len(accounts)
+    capped_accounts = accounts[:max_accounts]
+    today = date.today().isoformat()
+
+    def _run(acct: dict) -> dict | None:
+        try:
+            result = agent.run_account(acct["account_id"], today, client=client)
+        except Exception as exc:  # noqa: BLE001 - Salesforce or Anthropic error; skip, keep going
+            print(f"SKIPPED {acct['account_id']} ({acct['name']}): {exc}", file=sys.stderr)
+            return None
+        agent.write_brief(result, acct["name"])
+        agent.append_briefs_csv(result, acct["name"])
+        a = result.assessment
+        return {
+            **acct,
+            "score": a["score"], "band": a["band"], "abstained": a["abstained"],
+            "drivers": a["drivers"], "rationale": a["rationale"],
+        }
+
+    results = []
+    if max_workers <= 1:
+        for acct in capped_accounts:
+            r = _run(acct)
+            if r is not None:
+                results.append(r)
+    else:
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            futures = {pool.submit(_run, acct): acct for acct in capped_accounts}
+            for future in as_completed(futures):
+                r = future.result()
+                if r is not None:
+                    results.append(r)
+
+    results.sort(key=lambda r: -r["score"])
     return {
         "period": period,
         "window_start": start.isoformat(),
@@ -129,5 +179,6 @@ def answer_bulk_window(period: str, max_accounts: int = 15, max_workers: int = 6
         "total_matching": total_matching,
         "screened_count": len(results),
         "capped": total_matching > max_accounts,
+        "estimated_cost_usd": round(len(results) * 0.32, 2),
         "results": results,
     }

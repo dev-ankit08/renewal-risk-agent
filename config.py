@@ -19,8 +19,9 @@ SYNTHESIS_MODEL = "claude-opus-5"     # packets only, never raw records
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
 
 # Salesforce org alias, already authenticated via the `sf` CLI on this machine.
-# There is no token/URL to configure here — auth is inherited entirely from
-# whatever `sf` CLI session is active. See salesforce_client.py.
+# There is no separate Salesforce token/secret/client id to configure here —
+# the Salesforce MCP server (@salesforce/mcp, launched by salesforce_client.py)
+# reuses this machine's existing `sf` CLI session for auth.
 SALESFORCE_ORG_ALIAS = os.environ.get("RENEWAL_AGENT_SF_ORG_ALIAS", "renewalRiskSandbox")
 
 # Explicit opt-in required before querying any org alias other than the known
@@ -40,8 +41,19 @@ DEFAULT_TOOL_BUDGET_PER_SPECIALIST = 8
 # computed anywhere — run.py always requires an explicit --as-of.
 DEFAULT_LOOKAHEAD_DAYS = 120
 
-# --- sf CLI ----------------------------------------------------------------------
-SF_CLI_TIMEOUT_SECONDS = 60
+# --- Salesforce MCP server (@salesforce/mcp, run via npx) ------------------------
+# "data" is the minimal toolset containing run_soql_query — deliberately
+# excludes metadata/devops/etc. toolsets that expose write/deploy tools.
+SF_MCP_TOOLSETS = os.environ.get("RENEWAL_AGENT_SF_MCP_TOOLSETS", "data")
+
+# Generous: covers first-run `npx` package download/cache time, not just
+# server-process spawn. Confirmed live: a first run took long enough to need
+# this separate from the per-call timeout below; subsequent runs are fast
+# once npx's cache is warm.
+SF_MCP_STARTUP_TIMEOUT_SECONDS = int(os.environ.get("RENEWAL_AGENT_SF_MCP_STARTUP_TIMEOUT_SECONDS", "90"))
+
+# Per soql_query/get_record call, once the server is already warm.
+SF_MCP_CALL_TIMEOUT_SECONDS = int(os.environ.get("RENEWAL_AGENT_SF_MCP_CALL_TIMEOUT_SECONDS", "45"))
 
 # --- Cost rates ------------------------------------------------------------------
 # Placeholder $/1M tokens for the POC cost estimate only.

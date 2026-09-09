@@ -128,18 +128,20 @@ def prescreen_bulk(
     max_accounts: int | None = None,
     max_workers: int = 1,
 ) -> list[dict]:
-    """Screens every renewing account. A single account's `sf` CLI call
-    occasionally hangs/times out under real-world load (observed: one query
-    stalling past config.SF_CLI_TIMEOUT_SECONDS after ~25+ prior calls in the
-    same run) — that failure is surfaced and skipped rather than aborting the
-    whole screen, matching run.py's run_golden per-account failure handling.
+    """Screens every renewing account. A single account's Salesforce MCP call
+    can occasionally time out under real-world load (see
+    config.SF_MCP_CALL_TIMEOUT_SECONDS) — that failure is surfaced and
+    skipped rather than aborting the whole screen, matching run.py's
+    run_golden per-account failure handling.
 
     max_accounts caps how many (soonest-renewing first, list is already
     sorted) get screened — useful for a web request that shouldn't hang for
-    minutes. max_workers > 1 screens accounts concurrently via a thread pool:
-    each account's screen is dominated by `sf` CLI subprocess wait, not CPU,
-    and each call spawns its own separate subprocess, so this is safe on one
-    shared client instance (mirrors run.py --golden's existing pattern)."""
+    minutes. max_workers > 1 screens accounts concurrently via a thread pool;
+    note that salesforce_client.McpSalesforceClient serializes all reads
+    through one lock (see its module docstring), so this mainly overlaps
+    each account's own sequence of calls rather than truly parallelizing
+    Salesforce round-trips — still safe on one shared client instance
+    (mirrors run.py --golden's existing pattern), just not a linear speedup."""
     client = salesforce_client.get_client(config.SALESFORCE_ORG_ALIAS)
     today = date.today().isoformat()
     accounts = list_renewing_accounts(before_date, after_date, client)
