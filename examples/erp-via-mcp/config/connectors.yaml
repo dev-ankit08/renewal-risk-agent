@@ -1,0 +1,42 @@
+# Invoices from an ERP that has an MCP server (NetSuite, SAP, Dynamics, an
+# in-house one...). The tool names, arguments and result shape below are
+# placeholders: list your server's tools (its docs, or any MCP inspector) and
+# fill in the real ones. Only tools named here are ever called.
+primary: crm
+
+sources:
+  crm:
+    preset: salesforce
+    org_alias: prodOrg
+  erp:
+    type: mcp
+    server:
+      command: npx
+      args: ["-y", "your-erp-mcp-server"]
+      env: {ERP_ACCOUNT: "${ENV:ERP_ACCOUNT}", ERP_TOKEN: "${ENV:ERP_TOKEN}"}
+      # or a remote server:  url: https://erp-mcp.internal/mcp   headers: {Authorization: "Bearer ${ENV:ERP_TOKEN}"}
+    entities:
+      customer:
+        list:
+          tool: run_query
+          args: {query: "SELECT id, companyname, email, custentity_crm_id FROM customer"}
+          records_path: items
+        fields: {id: id, name: companyname, domain: "email | domain", key_account_id: custentity_crm_id}
+      invoice:
+        fetch:
+          tool: run_query
+          args: {query: "SELECT id, total, amountremaining, status, duedate, trandate FROM transaction WHERE type = 'CustInvc' AND entity = '{link_value}' AND trandate <= '{as_of}'"}
+          records_path: items
+        fields:
+          id: id
+          amount: total
+          amount_due: amountremaining
+          status: status
+          is_paid: "amountremaining | num | eq(0)"
+          due_date: "duedate | date"
+          created_at: "trandate | date"
+
+linking:
+  erp:
+    - match: "key_account_id = account.id"
+    - match: domain

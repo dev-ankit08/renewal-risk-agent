@@ -1,0 +1,69 @@
+label: Zendesk
+description: Zendesk Support — tickets per organization, priority, escalation tag, CSAT.
+setup_notes: |
+  Admin Center > Apps and integrations > Zendesk API: enable token access and
+  create a token. Use an agent account with read access.
+  Linking: organizations carry `external_id` (often the CRM account id) and
+  `domain_names`; use `match: "key_account_id = account.id"` and/or `match: domain`.
+  Escalation is read from an `escalated` tag — override `ticket.fields.is_escalated` if you use another tag or field.
+params:
+  subdomain: {required: true, label: Subdomain, description: "the part before .zendesk.com"}
+
+auth_methods:
+  - method: oauth2
+    label: Sign in with Zendesk (OAuth)
+    help: "Admin Center > Apps and integrations > APIs > Zendesk API > OAuth Clients: add a client with redirect URL {callback_url}; paste its identifier and secret."
+    params:
+      client_id: {required: true, label: Client identifier}
+      client_secret: {required: true, secret: true, label: Client secret}
+    oauth:
+      authorize_url: "https://{{subdomain}}.zendesk.com/oauth/authorizations/new"
+      token_url: "https://{{subdomain}}.zendesk.com/oauth/tokens"
+      scopes: read
+      pkce: false
+    set: {connection: {auth: {type: oauth2}}}
+  - method: token
+    label: Agent email + API token
+    help: "Admin Center > Apps and integrations > Zendesk API: enable token access and add a token."
+    params:
+      email: {required: true, label: Agent email}
+      api_token: {required: true, secret: true, label: API token}
+    set: {connection: {auth: {type: basic, username: "{{email}}/token", password: "{{api_token}}"}}}
+
+type: rest
+connection:
+  base_url: "https://{{subdomain}}.zendesk.com"
+  pagination: {type: next_url, next_path: next_page}
+  health_path: /api/v2/users/me.json
+
+entities:
+  customer:
+    list:
+      request: {path: /api/v2/organizations.json, params: {per_page: 100}, records_path: organizations}
+    fields:
+      id: id
+      name: name
+      domain: "domain_names | domain"
+      key_account_id: external_id
+      created_at: "created_at | date"
+
+  ticket:
+    describe:
+      request: {path: /api/v2/ticket_fields.json, records_path: ticket_fields, pagination: {type: none}}
+      name: type
+      label: title
+      description: description
+      options: system_field_options
+      option_value: value
+    fetch:
+      request: {path: "/api/v2/organizations/{link_value}/tickets.json", params: {per_page: 100}, records_path: tickets}
+    fields:
+      id: id
+      status: status
+      is_open: "status | in('new','open','pending','hold')"
+      priority: "priority | lower"
+      is_escalated: "tags | contains('escalated')"
+      satisfaction: {expr: satisfaction_rating.score, map: {good: 5, bad: 1}}
+      opened_at: "created_at | date"
+      created_at: "created_at | date"
+      updated_at: "updated_at | date"

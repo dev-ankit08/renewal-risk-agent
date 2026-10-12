@@ -1,0 +1,6 @@
+# Demo overrides (everything else comes from renewal_risk/defaults/agent.yaml).
+schedule:
+  enabled: false
+  lookahead_days: 120
+bulk:
+  max_deep_assessments: 3

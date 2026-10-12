@@ -1,0 +1,103 @@
+# Offline demo: four "systems", all synthetic, no credentials.
+#   python examples/csv-demo/generate.py
+#   renewal-risk --config examples/csv-demo/config setup check --account A001
+#
+# The billing and support sources mimic Stripe / Zendesk exports, so their
+# field mappings look like the real presets (epoch dates, cents, tags...).
+
+primary: crm
+
+sources:
+  crm:
+    type: csv
+    path: ../data/crm
+    test_data: true            # synthetic: allowed to reach the model without a ZDR confirmation
+    entities:
+      account:
+        list: {file: accounts.csv}
+        fetch: {file: accounts.csv, match: Id}
+        fields: {id: Id, name: Name, domain: "Website | domain", owner_email: OwnerEmail, region: Region,
+                 segment: Segment, created_at: "CreatedDate | date"}
+      renewal:
+        fetch: {file: renewals.csv, match: AccountId}
+        list: {file: renewals.csv}
+        fields: {id: Id, account_id: AccountId, account_name: AccountName, name: Name, amount: Amount,
+                 close_date: "CloseDate | date", stage: Stage, is_open: "IsClosed | not",
+                 stage_changed_at: "StageChanged | date", created_at: "CreatedDate | date"}
+      contract:
+        fetch: {file: contracts.csv, match: AccountId}
+        fields: {id: Id, arr: ARR, status: Status, start_date: "StartDate | date", end_date: "EndDate | date",
+                 created_at: "CreatedDate | date"}
+      line_item:
+        fetch: {file: line_items.csv, match: AccountId}
+        fields: {id: Id, product: Product, quantity: Quantity, status: Status,
+                 created_at: "CreatedDate | date", updated_at: "LastModifiedDate | date"}
+      contact:
+        fetch: {file: contacts.csv, match: AccountId}
+        fields: {id: Id, name: Name, title: Title, is_primary: IsPrimary, is_active: "Status | ne('left')",
+                 created_at: "CreatedDate | date"}
+      activity:
+        fetch: {file: activities.csv, match: AccountId}
+        fields: {id: Id, type: Type, activity_date: "ActivityDate | date", created_at: "CreatedDate | date"}
+
+  billing:                     # Stripe-like export
+    type: csv
+    path: ../data/billing
+    test_data: true
+    entities:
+      customer:
+        list: {file: customers.csv}
+        fields: {id: id, name: name, domain: "email | domain", key_account_id: crm_account_id, created_at: "created | date"}
+      invoice:
+        fetch: {file: invoices.csv, match: customer}
+        fields: {id: id, amount: "total | cents", amount_due: "amount_remaining | cents", status: status,
+                 is_paid: "status | in('paid','void','draft')", due_date: "due_date | date", created_at: "created | date"}
+      payment:
+        fetch: {file: payments.csv, match: customer}
+        fields: {id: id, amount: "amount | cents", status: status, is_failed: "status | eq('failed')",
+                 is_disputed: disputed, created_at: "created | date"}
+      contract:
+        fetch: {file: subscriptions.csv, match: customer}
+        fields: {id: id, status: status, cancel_scheduled: cancel_at_period_end,
+                 end_date: "current_period_end | date", created_at: "created | date"}
+
+  support:                     # Zendesk-like export
+    type: csv
+    path: ../data/support
+    test_data: true
+    entities:
+      customer:
+        list: {file: organizations.csv}
+        fields: {id: id, name: name, domain: "domain_names | domain", key_account_id: external_id}
+      ticket:
+        fetch: {file: tickets.csv, match: organization_id}
+        fields:
+          id: id
+          status: status
+          is_open: "status | in('new','open','pending','hold')"
+          priority: "priority | lower"
+          is_escalated: "tags | contains('escalated')"
+          satisfaction: satisfaction
+          created_at: "created_at | date"
+          updated_at: "updated_at | date"
+
+  usage:                       # product database (SQLite here; Postgres/Snowflake/... in real life)
+    type: sql
+    dsn: "sqlite:///{config_dir}/../data/usage.sqlite"
+    test_data: true
+    entities:
+      usage_metric:
+        fetch: {query: "SELECT id, metric, day, value FROM usage WHERE tenant_id = :link_value AND day <= :as_of"}
+        fields: {id: id, metric: metric, period_start: "day | date", value: value, created_at: "day | date"}
+
+linking:
+  billing:
+    - match: "key_account_id = account.id"   # customers that carry the CRM id
+    - match: domain                          # then email domain == account website domain
+    - match: fuzzy_name                      # then similar names -> review queue (never automatic)
+      threshold: 0.85
+  support:
+    - match: "key_account_id = account.id"
+    - match: domain
+  usage:
+    - match: same_id                         # tenant_id is the CRM account id

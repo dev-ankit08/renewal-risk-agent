@@ -1,132 +1,165 @@
-# Renewal Risk Agent — v3
+# Renewal Risk Agent
 
-Coordinator → 2 specialists in parallel (Commercial, Relationship) → Synthesis
-→ one-page brief, with a real, explained rationale. One real data source
-(Salesforce, via the official Salesforce MCP server), one real model
-(Anthropic), no billing connector, no mock/stub mode. See `DOCUMENTATION.md`
-for the full design and gates — see `FLOW.md` for a code-level trace of
-exactly what runs, in what order, and where each prompt comes from.
+A self-hosted renewal-risk agent that plugs into whatever systems a company
+already uses. It reads accounts and renewals from the CRM, money from billing
+or the ERP, tickets from the support desk, delivery data from project tools,
+and adoption from a product database or any MCP server. It then explains which
+renewals are at risk, why, and what to do next. Admins set it up in a web UI.
+Project Directors ask in Slack. Other tools use the REST API.
 
-```
-TRIGGER  an account Id + as-of date (or a golden-set CSV for backtesting)
-   ▼
-COORDINATOR (claude-opus-5, no tools) — picks specialists, sets tool budget
-   ├── COMMERCIAL   (claude-sonnet-5)  Opportunity, Contract, Asset/CPQ
-   └── RELATIONSHIP (claude-sonnet-5)  Case, Contact, OpportunityContactRole, Task, Event
-        (parallel; every read goes through soql_guard — as-of enforcement + DML block)
-   ▼
-2 × EvidencePacket (typed, cited, declares its own gaps)
-   ▼
-SYNTHESIS (claude-opus-5) — packets only, never raw records; scores, cites,
-explains its reasoning in plain English, may abstain
-   ▼
-OUTPUT  briefs/*.md · briefs.csv · runs.sqlite — no Salesforce write-back, no Slack, no email
-```
+It ships with two business-type packs:
 
-## Setup
+* **B2B SaaS:** subscription renewals, with risk drawn from the CRM, billing,
+  support and product usage.
+* **IT services & consulting:** SOW and managed-services renewals, with risk
+  drawn from the CRM, projects (RAG status, budget burn, slipping milestones),
+  timesheets, escalations and invoices.
 
 ```
-pip install -r requirements.txt
-cp .env.example .env        # then paste in a real ANTHROPIC_API_KEY
-sf org list                 # confirm your target org alias shows "Connected"
-python3 test_guard.py       # 12 guard tests — must pass, no credentials needed
+Salesforce / HubSpot / Dynamics ─┐
+Stripe / Chargebee / NetSuite ───┤   connectors      standard       signal     Claude
+Zendesk / Freshdesk / Jira ──────┼─► (preset or  ─► data model ─► engine ─► specialists ─► score, why,
+Postgres / Snowflake / CSV ──────┤   generic)        + linking     (free)     → synthesis    next actions
+any MCP server ──────────────────┘                                                         │
+                                       Slack (/renewal-risk, @mention, alerts) · REST API · CLI ◄┘
 ```
 
-Two things to configure, and nothing else:
+* **Not tied to any platform.** Sources are configured, not coded. A built-in
+  catalog of presets (Salesforce, HubSpot, Stripe, Zendesk, Freshdesk) means the
+  admin only enters credentials. Anything else connects through the generic
+  REST, SQL, CSV or MCP connectors.
+* **Admin UI for setup, no YAML needed.** For each kind of data (customers,
+  support, billing, projects...), the admin picks a system from a dropdown and
+  signs in (OAuth or an API token). Credentials are kept encrypted and never
+  written to config files. The admin then reviews a field mapping drafted by an
+  **AI mapping agent**, which reads each system's field names, labels,
+  descriptions and sample values. Remaining screens cover approving account
+  matches across systems, tuning signals and playbooks, granting access, and
+  connecting Slack.
+* **Config as code still works.** The UI writes the same YAML the CLI uses, so
+  `renewal-risk setup check`, `link --review` and `mapping suggest` work from the
+  command line too.
+* **Explained, cited, actionable.** Every signal cites the record it came from,
+  e.g. `billing:invoice/in_123`. Any citation the model invents is dropped.
+  Actions name an owner role, a priority and a due date, and companies can
+  supply their own playbook.
+* **Built for Project Directors in Slack.** Ask with `/renewal-risk Acme` or
+  `@Renewal Risk which renewals this quarter are at risk?`. The bot DMs an alert
+  when an account rises into high risk. Each user only sees the accounts their
+  role and scope allow.
+* **Safe by default.** Every connector is read-only. The standard model has no
+  free-text field, so ticket bodies never reach a prompt. Backtests are filtered
+  by as-of date and audited for leaks. Real customer data is not sent to the
+  model until the data-retention policy is confirmed.
 
-1. **`ANTHROPIC_API_KEY`** in `.env` (or exported in your shell). Required for
-   every Coordinator/Specialist/Synthesis call — there is no stub fallback.
-2. **A `sf` CLI session already authenticated** against your target org, plus
-   **Node.js (with `npm`/`npx`) on PATH**. Salesforce reads go through the
-   official Salesforce MCP server (`@salesforce/mcp`, launched automatically
-   via `npx` — no separate install step), which reuses your existing `sf`
-   session for auth. **No Salesforce token/client id/secret to configure** —
-   default org alias: `renewalRiskSandbox`; override with
-   `RENEWAL_AGENT_SF_ORG_ALIAS`. If `sf org list` doesn't show your org as
-   Connected, run `sf org login web --alias <your-alias>` once. The first
-   query in a fresh process is slower while `npx` resolves/caches the MCP
-   server package; subsequent ones are fast (a persistent connection is kept
-   open, not respawned per query — see `salesforce_client.py`).
+## Try it offline (2 minutes, no credentials)
 
-If you plan to point this at a real (non-test) org, read the ZDR note in
-`DOCUMENTATION.md` first — real Salesforce field data reaches the Anthropic
-API in specialist prompts, and `salesforce_client.get_client()` will refuse
-to run against any org alias other than the known synthetic test sandbox
-until you explicitly confirm that with `RENEWAL_AGENT_ZDR_CONFIRMED=true`.
+```bash
+pip install -e ".[all]"
+python examples/csv-demo/generate.py                 # SaaS demo: CRM, billing, support, usage
+renewal-risk --config examples/csv-demo/config setup check --account A001
+renewal-risk --config examples/csv-demo/config prescreen --renewals-before 2027-03-01
 
-## Run it
+python examples/services-demo/generate.py            # IT services demo: CRM, PSA, escalations, finance
+renewal-risk --config examples/services-demo/config setup check --account C001
 
+cd web && npm install && npm run build && cd ..     # build the admin UI once
+renewal-risk --config examples/csv-demo/config serve # http://127.0.0.1:8080/admin/ (setup token in the log)
 ```
-python3 run.py --account 0018c00002LmNqRAAZ --as-of 2026-09-08   # one account, full explained pipeline
-python3 run.py --golden golden_set.csv --concurrency 4             # batch, for backtesting
-python3 evaluate.py golden_set.csv --k 20                           # Gate 0/1 + fabrication check
+
+`setup check` reports four connected sources and account matching per system.
+It shows billing matched 4 of 6 accounts, with one similar-name match waiting
+for review. A001 has 13 signals drawn from all four systems.
+
+With an `ANTHROPIC_API_KEY` in `.env`, run a full explained assessment:
+
+```bash
+renewal-risk --config examples/csv-demo/config assess A001          # writes briefs/A001.md
+renewal-risk --config examples/csv-demo/config ask "high risk renewals this quarter" --as admin@demo.example
+DEMO_API_KEY=demo-key-change-me renewal-risk --config examples/csv-demo/config serve   # http://127.0.0.1:8080
 ```
 
-Every run above calls the real Anthropic API (costs real tokens) and reads
-real Salesforce data. For a free, instant, no-Anthropic-call screen to narrow
-down which accounts are worth a real run:
+## Set it up for a company
 
+1. **Run it:** `docker compose up` (the image builds the admin UI), or install
+   with `pip install ".[all]"`, then run `cd web && npm install && npm run build`,
+   then `renewal-risk serve`.
+2. **First run:** open `http://<host>:8080/admin/`. Enter the one-time setup
+   token printed in the server log, create the admin account, and choose the
+   business type.
+3. **Connect data:** on the Data sources screen, choose a system for each
+   category and sign in. Salesforce, HubSpot and Zendesk use OAuth with your own
+   free OAuth app, and the screen shows the callback URL to register. Stripe,
+   Freshdesk and Jira use API tokens. Any other system can be a CSV/Excel upload.
+4. **Map fields:** click **Suggest with AI**, check the preview, and save.
+5. **Match accounts:** approve or reject the similar-name matches.
+6. **Grant access and connect Slack:** add people (by Slack email) with a role
+   and scope, and paste the Slack app's tokens. Create the app from
+   [`slack_manifest.yaml`](slack_manifest.yaml).
+7. **Confirm data retention.** Once your Anthropic org has Zero Data Retention
+   (or an equivalent agreement), set `policy.zdr_confirmed: true` in `agent.yaml`.
+
+Prefer files? Copy an example such as
+[`examples/salesforce-stripe-zendesk`](examples/salesforce-stripe-zendesk/config)
+into `./config`, put secrets in `.env`, and run `renewal-risk setup check`.
+
+The full walkthrough is in **[docs/ADMIN_GUIDE.md](docs/ADMIN_GUIDE.md)**. How it
+works inside, along with the safety and evaluation gates, is in
+**[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**.
+
+## Example: Salesforce + Stripe + Zendesk
+
+```yaml
+# config/connectors.yaml
+primary: crm
+sources:
+  crm:     {preset: salesforce, org_alias: prodOrg}
+  billing: {preset: stripe,  api_key: "${ENV:STRIPE_API_KEY}"}
+  support: {preset: zendesk, subdomain: acme, email: ops@acme.com, api_token: "${ENV:ZENDESK_API_TOKEN}"}
+linking:
+  billing: [{match: "key_account_id = account.id"}, {match: domain}, {match: fuzzy_name}]
+  support: [{match: "key_account_id = account.id"}, {match: domain}]
 ```
-python3 run.py prescreen --renewals-before 2026-12-31   # rank all open renewals by heuristic signal severity
-python3 run.py prescreen --account 0018c00002LmNqRAAZ    # heuristic check on one account
-```
 
-`prescreen` uses `heuristics.py` — fixed thresholds over real records, no
-model call, no rationale. It's a triage tool, not a replacement for the real
-explained assessment `--account`/`--golden` produce. (This is the only place
-in the codebase that still uses the free heuristic path — the web UI below
-always calls the real pipeline.)
+That is the whole connector setup. If the company moves from Zendesk to
+Freshdesk, change one line (`preset: freshdesk`). Signals, prompts, Slack and
+access rules stay the same, because they all work on the standard model.
 
-## Web UI — for someone who shouldn't have to type CLI commands
+## Commands
 
-```
-python webapp.py
-```
-Then open `http://127.0.0.1:5000` — or just double-click `run_webapp.bat`,
-which does both and never requires opening a terminal after initial setup.
-One text box. Type a plain-English question — **every answer is real**: both
-question types call the full Coordinator→Specialists→Synthesis pipeline
-(`agent.run_account`), the same one `run.py --account` uses. There is no
-free/instant tier on this page (see `run.py prescreen` below for that).
-
-- `is Ridgeline Materials at risk` — resolves the company name (free, no AI —
-  just a name lookup), then runs the real pipeline and shows the actual
-  score/band/rationale/drivers. Takes ~15-30s, costs real Anthropic tokens.
-- `accounts at risk this quarter` / `this half year` / `this year` — finds
-  every account with an open renewal in that calendar window (free lookup),
-  then runs the real pipeline on each one (capped, currently 10 accounts per
-  question) and shows a ranked table with an estimated cost banner; click a
-  row to expand its full explanation. This can take a few minutes for a full
-  window — the page says so while it waits.
-
-See `nlquery.py` for the plain-English parsing (regex-based, no NLP library,
-no Anthropic call for parsing itself) and `prescreen.resolve_account_by_name`/
-`list_renewing_accounts` for the free account-lookup queries both question
-types still use before handing off to the real pipeline.
-
-## Files
-
-| File | What it is |
+| | |
 |---|---|
-| `guard.py` | Build/verify first. As-of enforcement, DML block, banned fields, leakage audit. |
-| `test_guard.py` | 12 guard tests. |
-| `schemas.py` | EvidencePacket + RiskAssessment JSON Schemas. The contract everything depends on. |
-| `signals.yaml` | Signal registry with severity thresholds. A CS ops analyst owns this, not an engineer. |
-| `prompts.py` | The four prompts. Tune these, not the model. |
-| `agent.py` | Orchestrator, ledger, brief rendering. |
-| `config.py` | Models, org alias, rates, ZDR gate. The file you edit (or `.env`). |
-| `model_client.py` | Anthropic wrapper — always real, no stub. |
-| `salesforce_client.py` | The one real Salesforce client — a persistent connection to the official Salesforce MCP server (`@salesforce/mcp`, via `npx`). |
-| `heuristics.py` | Free, zero-cost signal detection — used only by `run.py prescreen` (the CLI's free-tier command). |
-| `prescreen.py` | `run.py prescreen`'s free risk screen, plus `resolve_account_by_name`/`list_renewing_accounts` (account lookups the web UI also reuses). |
-| `nlquery.py` | Plain-English question parsing for the web UI, and orchestrates the real pipeline for both question types. |
-| `webapp.py` | Local web UI (`python webapp.py` or `run_webapp.bat`) — one text box, plain English, always real/explained answers. |
-| `build_golden_set.py` | One-off script: regenerates `golden_set.csv` from the real org's tagged test accounts. |
-| `evaluate.py` | Precision@k vs baseline, fabrication check, faithfulness worksheet. |
-| `run.py` | CLI. |
-| `golden_set.example.csv` | A representative example (one account per test risk profile). |
+| `renewal-risk presets` | the connector catalog |
+| `renewal-risk setup` / `setup check [--account ID]` | guided setup / validate + test + coverage report |
+| `renewal-risk link --review` | approve or reject suggested account matches |
+| `renewal-risk mapping suggest --source S --entity E` | draft a field mapping from sample records |
+| `renewal-risk prescreen --renewals-before DATE` | free screen of every renewal in a window |
+| `renewal-risk assess ID` / `assess --golden CSV` | full assessment(s); markdown briefs |
+| `renewal-risk ask "…" --as EMAIL` | answer as a given user (tests access rules) |
+| `renewal-risk scan [--dry-run]` | one scheduled scan + alerts |
+| `renewal-risk evaluate CSV` | leakage, precision@k vs baseline, fabrication check |
+| `renewal-risk serve` | admin UI + REST API + Slack app + scheduler |
 
-## Deliberately absent
+## Repository layout
 
-Stripe/PayPal · warehouse · identity resolution · Postgres · scheduler ·
-secrets manager · Slack · email · Salesforce writes · rate-limit backoff.
+```
+renewal_risk/
+  core/         standard model, mapping, connectors base, linking, signals, prompts, LLM client, pipeline, validation
+  connectors/   salesforce (sf CLI / MCP), salesforce_rest (OAuth), rest, sql, csv, mcp (generic)
+  presets/      salesforce, hubspot, stripe, zendesk, freshdesk, jira  (YAML; add more without code)
+  packs/        saas, it_services — setup categories, signals, specialists, playbooks, wording
+  defaults/     agent.yaml, signals.yaml (merged under the pack and a company's config)
+  admin/        admin API, AI mapping agent, pack catalog, config store, admin login
+  auth/         encrypted secret store, OAuth 2.0 (PKCE + refresh)
+  access/       role/scope access control
+  service/      risk service, REST API, SQLite store, scheduler, web page
+  slack/        Bolt app, Block Kit rendering, alert notifier
+web/            admin UI (React + Vite; `npm run build` puts it in renewal_risk/admin/static)
+examples/       csv-demo, services-demo (offline), salesforce-only, salesforce-stripe-zendesk, hubspot-freshdesk-postgres, erp-via-mcp
+scripts/        build_golden_set.py (Salesforce test sandbox evaluation helper)
+tests/          pytest suite (fake model client; no network)
+```
+
+Run the tests with `pytest`. They need no network or API key. The browser test
+of the admin UI runs when the UI is built and Chromium is installed
+(`python -m playwright install chromium`).

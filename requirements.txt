@@ -1,6 +1,21 @@
-pyyaml>=6.0          # signals.yaml — hard dependency
-jsonschema>=4.0      # optional: schemas.py falls back to a built-in validator if absent
-anthropic>=0.40.0    # Coordinator/Specialist/Synthesis model calls
-python-dotenv>=1.0.0 # loads .env for ANTHROPIC_API_KEY / RENEWAL_AGENT_SF_ORG_ALIAS
-flask>=3.0.0         # local web UI (webapp.py) — single-user, no auth, dev server only
-mcp>=2.2.0           # official Python MCP SDK — connects to the Salesforce MCP server (salesforce_client.py)
+# Everything, for a full install (`pip install -r requirements.txt`).
+# Minimal installs: `pip install .` plus extras — see pyproject.toml.
+pyyaml>=6.0
+jsonschema>=4.0
+python-dotenv>=1.0
+anthropic>=1.0          # model calls; brings httpx2 (REST connector)
+fastapi>=0.110          # REST API
+uvicorn>=0.29
+python-multipart>=0.0.9 # admin UI file uploads
+cryptography>=42        # encrypted secret store (credentials entered in the admin UI)
+mcp>=2.2                # Salesforce + any MCP server as a source
+sqlalchemy>=2.0         # SQL sources (+ your driver: psycopg, pymysql, snowflake-sqlalchemy...)
+slack_bolt>=1.18        # Slack app
+slack_sdk>=3.27
+apscheduler>=3.10       # scheduled scans / alerts
+openpyxl>=3.1           # .xlsx exports in CSV sources
+# dev
+pytest>=8
+httpx>=0.27             # FastAPI TestClient
+playwright>=1.48        # admin UI end-to-end test (`python -m playwright install chromium`)
+vulture>=2.11           # dead-code check

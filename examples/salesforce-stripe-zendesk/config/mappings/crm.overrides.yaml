@@ -1,0 +1,8 @@
+# Only what differs from the Salesforce preset. `renewal-risk mapping suggest
+# --source crm --entity contract` proposes these from sample records.
+contract:
+  fields:
+    arr: ARR__c
+account:
+  fields:
+    region: Sales_Region__c          # scope Project Directors by your own region field

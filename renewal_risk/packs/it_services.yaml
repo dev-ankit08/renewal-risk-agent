@@ -1,0 +1,75 @@
+# Business-type pack: IT services / consulting / managed-services firms.
+# Renewal = SOW extension, managed-services contract or follow-on work. Risk
+# shows up in delivery: budget burn, slipping milestones, red projects,
+# escalations, falling billable effort — read together with the CRM.
+label: IT services & consulting
+description: SOW and managed-services renewals — risk from CRM, project delivery, timesheets, escalations and invoices.
+
+terminology:
+  account: client
+  accounts: clients
+  renewal: SOW renewal
+  renewals: SOW renewals
+  owner_role: Project director
+
+categories:
+  - key: accounts
+    label: Clients & contracts
+    description: Client list, SOWs / MSAs, renewal or extension opportunities, key contacts — usually the CRM.
+    entities: [account, renewal, contract, contact, activity]
+    required: true
+  - key: delivery
+    label: Projects & delivery
+    description: Projects with health (RAG), budget vs actuals, milestones and change requests — your PSA or project tool.
+    entities: [project, milestone, change_request]
+  - key: effort
+    label: Timesheets & effort
+    description: Hours logged per client and project, billable vs non-billable.
+    entities: [time_entry]
+  - key: escalations
+    label: Support & escalations
+    description: Formal client escalations and service-desk tickets.
+    entities: [escalation, ticket]
+  - key: finance
+    label: Invoices
+    description: Invoices and payments from finance / ERP.
+    entities: [invoice, payment]
+
+signals: [amount_decrease, opp_stalled, sow_ending_no_renewal, budget_overrun, schedule_slip, project_red,
+          missed_milestones, billable_hours_drop, open_escalations, high_priority_tickets, open_ticket_backlog,
+          champion_departed, no_recent_activity, low_engagement, invoice_overdue, payment_disputes]
+
+specialists:
+  commercial:
+    entities: [renewal, contract]
+    focus: >-
+      The commercial picture of the client relationship: SOW / contract end dates,
+      whether a renewal or extension is in the pipeline, its value vs the current
+      contract, and a stalled deal.
+  delivery:
+    entities: [project, milestone, time_entry, change_request]
+    focus: >-
+      Delivery health: projects running red or amber, budget burn vs plan,
+      forecast vs planned end dates, missed milestones, falling billable effort
+      (a sign the client is winding down work), unresolved change requests.
+  relationship:
+    entities: [escalation, ticket, contact, activity]
+    focus: >-
+      The client relationship: formal escalations, service-desk load, whether the
+      sponsor / champion is still there, how recently leadership met the client.
+  financial:
+    entities: [invoice, payment]
+    focus: >-
+      Payment behaviour: overdue invoices and disputes — often the first sign of a
+      client questioning value.
+
+playbooks:
+  owner_roles: [Project director, Delivery manager, Account manager, Practice head, Finance]
+  plays:
+    - {signals: [project_red, budget_overrun, schedule_slip], action: "Delivery manager runs a project recovery review and shares a recovery plan with the client sponsor", owner_role: Delivery manager, due_in_days: 7}
+    - {signals: [missed_milestones], action: "Re-baseline the milestone plan with the client and confirm acceptance criteria", owner_role: Delivery manager, due_in_days: 10}
+    - {signals: [open_escalations], action: "Project director calls the client sponsor and owns the escalation to closure", owner_role: Project director, due_in_days: 3}
+    - {signals: [sow_ending_no_renewal, opp_stalled], action: "Account manager opens the extension / renewal conversation and proposes the next SOW", owner_role: Account manager, due_in_days: 14}
+    - {signals: [billable_hours_drop], action: "Practice head reviews pipeline of upcoming work with the client — confirm whether scope is winding down", owner_role: Practice head, due_in_days: 14}
+    - {signals: [champion_departed], action: "Map the new stakeholders and schedule an executive relationship meeting", owner_role: Project director, due_in_days: 14}
+    - {signals: [invoice_overdue, payment_disputes], action: "Finance and the account manager resolve the disputed / overdue invoices before renewal talks", owner_role: Finance, due_in_days: 7}

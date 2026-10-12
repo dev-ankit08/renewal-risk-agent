@@ -1,0 +1,18 @@
+# docker compose up   — then open http://localhost:8080/admin/ (setup token: `docker compose logs`)
+# Try it offline:      python examples/csv-demo/generate.py && RR_CONFIG=./examples/csv-demo/config docker compose up
+services:
+  renewal-risk:
+    build: .
+    env_file: .env
+    environment:
+      RENEWAL_RISK_CONFIG_DIR: /app/config
+      RENEWAL_RISK_PUBLIC_URL: ${RENEWAL_RISK_PUBLIC_URL:-http://localhost:8080}
+    volumes:
+      - ${RR_CONFIG:-./config}:/app/config        # writable: the admin UI saves config here
+      - ./examples/csv-demo/data:/app/data:ro     # only used by the csv demo
+      - rr-state:/app/state                       # secrets (encrypted), store, link cache
+    ports:
+      - "8080:8080"
+    restart: unless-stopped
+volumes:
+  rr-state:

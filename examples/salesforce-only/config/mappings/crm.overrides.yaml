@@ -1,0 +1,8 @@
+# Org-specific fields layered over the Salesforce preset's mapping.
+contract:
+  fields:
+    arr: ARR__c                      # custom ARR field on Contract
+contact:
+  fields:
+    # This org marks departed contacts with a "(Former)" title prefix.
+    is_active: "Contact.Title | startswith('(Former)') | not"

@@ -1,0 +1,90 @@
+label: Stripe
+description: Stripe billing — subscriptions, invoices, charges (failed / disputed payments).
+setup_notes: |
+  Create a restricted key in Stripe (Developers > API keys) with READ access to
+  Customers, Subscriptions, Invoices and Charges; put it in an env var.
+  Linking: if your Stripe customers carry the CRM account id in metadata
+  (account_id / crm_account_id / salesforce_account_id / sf_account_id), use
+  `match: "key_account_id = account.id"`; otherwise `match: domain` uses the customer email domain.
+auth_methods:
+  - method: token
+    label: Restricted API key
+    help: "Stripe Dashboard > Developers > API keys > Create restricted key: Read on Customers, Subscriptions, Invoices, Charges."
+    params:
+      api_key: {required: true, secret: true, label: Restricted key, description: "rk_live_... (read-only)"}
+
+type: rest
+connection:
+  base_url: https://api.stripe.com
+  auth: {type: bearer, token: "{{api_key}}"}
+  pagination: {type: stripe}
+  health_path: /v1/customers?limit=1
+
+entities:
+  customer:
+    list:
+      request: {path: /v1/customers, params: {limit: 100}, records_path: data}
+    fields:
+      id: id
+      name: name
+      domain: "email | domain"
+      key_account_id: "metadata.account_id | coalesce('metadata.crm_account_id') | coalesce('metadata.salesforce_account_id') | coalesce('metadata.sf_account_id')"
+      created_at: "created | date"
+
+  contract:
+    fetch:
+      request:
+        path: /v1/subscriptions
+        params: {customer: "{link_value}", status: all, limit: 100, "created[lte]": "{as_of_epoch}"}
+        records_path: data
+    fields:
+      id: id
+      status: status
+      start_date: "start_date | date"
+      end_date: "current_period_end | coalesce('items.data[0].current_period_end') | date"
+      cancel_scheduled: cancel_at_period_end
+      created_at: "created | date"
+
+  line_item:
+    fetch:
+      request:
+        path: /v1/subscriptions
+        params: {customer: "{link_value}", status: all, limit: 100, "created[lte]": "{as_of_epoch}"}
+        records_path: data
+    fields:
+      id: "items.data[0].id"
+      product: "items.data[0].price.nickname | coalesce('items.data[0].price.product')"
+      quantity: "items.data[0].quantity"
+      status: status
+      is_active: "status | in('active','trialing','past_due')"
+      created_at: "created | date"
+
+  invoice:
+    fetch:
+      request:
+        path: /v1/invoices
+        params: {customer: "{link_value}", limit: 100, "created[lte]": "{as_of_epoch}"}
+        records_path: data
+    fields:
+      id: id
+      amount: "total | cents"
+      amount_due: "amount_remaining | cents"
+      status: status
+      is_paid: "status | in('paid','void','draft')"
+      due_date: "due_date | date"
+      paid_at: "status_transitions.paid_at | date"
+      created_at: "created | date"
+
+  payment:
+    fetch:
+      request:
+        path: /v1/charges
+        params: {customer: "{link_value}", limit: 100, "created[lte]": "{as_of_epoch}"}
+        records_path: data
+    fields:
+      id: id
+      amount: "amount | cents"
+      status: status
+      is_failed: "status | eq('failed')"
+      is_disputed: disputed
+      created_at: "created | date"

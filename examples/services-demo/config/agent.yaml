@@ -1,0 +1,3 @@
+pack: it_services
+bulk:
+  max_deep_assessments: 3

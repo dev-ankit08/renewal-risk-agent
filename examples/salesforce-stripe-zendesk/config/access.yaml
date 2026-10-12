@@ -1,0 +1,16 @@
+users:
+  - email: revops.admin@acme.com
+    role: admin
+  - email: pd.emea@acme.com
+    role: director
+    scope: {region: [EMEA]}
+  - email: pd.amer@acme.com
+    role: director
+    scope: {region: [AMER, LATAM]}
+  - email: vp.cs@acme.com
+    role: director
+    scope: all
+domains:
+  - domain: acme.com                 # every other employee: only accounts they own
+    role: csm
+    scope: {owner_email: self}

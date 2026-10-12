@@ -1,0 +1,29 @@
+# Accounts and renewals in Salesforce, money in Stripe, support in Zendesk.
+# Credentials come from the environment (.env) — never from this file.
+#
+#   renewal-risk --config examples/salesforce-stripe-zendesk/config setup check
+#   renewal-risk --config examples/salesforce-stripe-zendesk/config link --review
+primary: crm
+
+sources:
+  crm:
+    preset: salesforce
+    org_alias: prodOrg
+  billing:
+    preset: stripe
+    api_key: ${ENV:STRIPE_API_KEY}
+  support:
+    preset: zendesk
+    subdomain: acme
+    email: ops@acme.com
+    api_token: ${ENV:ZENDESK_API_TOKEN}
+
+linking:
+  billing:
+    - match: "key_account_id = account.id"    # Stripe customer metadata carries the Salesforce Account Id
+    - match: domain                           # else: customer email domain == Account website domain
+    - match: fuzzy_name                       # else: similar names go to `link --review`, never auto-linked
+      threshold: 0.88
+  support:
+    - match: "key_account_id = account.id"    # Zendesk organization external_id
+    - match: domain                           # organization domain_names

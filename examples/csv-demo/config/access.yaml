@@ -1,0 +1,13 @@
+# Demo users. In Slack, a user's profile email must match an entry here.
+users:
+  - email: admin@demo.example
+    role: admin
+  - email: pd.emea@demo.example
+    role: director
+    scope: {region: [EMEA]}
+  - email: csm.one@demo.example
+    role: csm                     # no scope: only accounts where owner_email is theirs
+domains:
+  - {domain: demo.example, role: viewer, scope: {owner_email: self}}   # everyone else: only accounts they own
+api_keys:
+  - {name: demo-admin, key: "${ENV:DEMO_API_KEY:-demo-key-change-me}", as: admin@demo.example}

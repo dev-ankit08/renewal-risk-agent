@@ -1,0 +1,10 @@
+# The original setup: everything from one Salesforce org, read through the
+# official Salesforce MCP server. Authorise the alias once: sf org login web --alias renewalRiskSandbox
+primary: crm
+sources:
+  crm:
+    preset: salesforce
+    org_alias: ${ENV:RENEWAL_AGENT_SF_ORG_ALIAS:-renewalRiskSandbox}
+    # The sandbox holds synthetic data only. Remove this line for a real org —
+    # then full assessments need policy.zdr_confirmed (agent.yaml).
+    test_data: true

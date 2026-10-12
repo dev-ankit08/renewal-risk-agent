@@ -1,0 +1,275 @@
+# Default signal catalog. A company's config/signals.yaml is merged over this
+# by `name` — override just the thresholds you want, add new signals, or set
+# `enabled: false` to turn one off. `replace_defaults: true` ignores this file.
+#
+# Signals reference STANDARD entities/fields (renewal_risk/core/model.py), so
+# the same catalog works whatever system the data comes from. A signal whose
+# entities no source provides is skipped and reported as a gap.
+#
+# Rule types and syntax: see renewal_risk/core/signals.py.
+
+signals:
+  # ---------------------------------------------------------------- commercial
+  - name: amount_decrease
+    specialist: commercial
+    description: Renewal amount is lower than the current contract ARR.
+    rule: pct_change
+    current:  {entity: renewal, field: amount, where: {is_open: true}, pick: "earliest:close_date"}
+    baseline: {entity: contract, field: arr, pick: "latest:start_date"}
+    direction: decrease
+    thresholds: {medium: 5, high: 15}
+    value_template: "Renewal amount ${current:,.0f} is {pct:.0f}% below current ARR ${baseline:,.0f}"
+
+  - name: opp_stalled
+    specialist: commercial
+    description: The open renewal has not changed stage in a long time.
+    rule: days_since
+    entity: renewal
+    where: {is_open: true}
+    date_field: stage_changed_at
+    thresholds: {medium: 30, high: 60}
+    value_template: "Renewal has not changed stage in {days} days (last change {last_date})"
+    gap_template: "opp_stalled not evaluated — no stage-change date on the open renewal"
+
+  - name: contract_downgrade
+    specialist: commercial
+    description: A product line was cancelled, retired or reduced to zero.
+    rule: exists
+    entity: line_item
+    pick: "latest:updated_at"
+    cases:
+      - where: {quantity: 0}
+        severity: high
+        value_template: "{product} reduced to 0 quantity"
+      - where: {status: [obsolete, cancelled, canceled, terminated, churned]}
+        severity: high
+        value_template: "{product} is {status}"
+      - where: {is_active: false}
+        severity: medium
+        value_template: "{product} is no longer active"
+
+  - name: cancellation_scheduled
+    specialist: commercial
+    description: A subscription is set to cancel at the end of its term.
+    rule: exists
+    entity: contract
+    cases:
+      - where: {cancel_scheduled: true}
+        severity: high
+        value_template: "Subscription {id} is scheduled to cancel (term ends {end_date})"
+
+  # -------------------------------------------------------------- relationship
+  - name: case_volume_spike
+    specialist: relationship
+    description: Tickets opened in the last 90 days vs the account's own earlier 90-day average.
+    rule: ratio_vs_baseline
+    entity: ticket
+    date_field: created_at
+    window_days: 90
+    baseline_windows: 3
+    min_count: 3
+    thresholds: {medium: 2, high: 3}
+    value_template: "{recent} tickets in the last {window_days} days — {ratio:.1f}x the account's usual rate ({baseline:.1f})"
+
+  - name: open_ticket_backlog
+    specialist: relationship
+    description: Tickets still open.
+    rule: count
+    entity: ticket
+    where: {is_open: true}
+    thresholds: {medium: 2, high: 3}
+    value_template: "{count} support ticket(s) still open"
+
+  - name: support_escalation
+    specialist: relationship
+    description: Escalated tickets.
+    rule: count
+    entity: ticket
+    where: {is_escalated: true}
+    window_days: 180
+    thresholds: {medium: 1, high: 2}
+    value_template: "{count} escalated ticket(s) in the last {window_days} days"
+
+  - name: high_priority_tickets
+    specialist: relationship
+    description: Open high / urgent priority tickets.
+    rule: count
+    entity: ticket
+    where: {is_open: true, priority: [high, urgent, critical, p1]}
+    thresholds: {high: 1}
+    value_template: "{count} open high-priority ticket(s)"
+
+  - name: poor_satisfaction
+    specialist: relationship
+    description: Low satisfaction scores (1-5 scale) on recent tickets.
+    rule: count
+    entity: ticket
+    where: {satisfaction: {lte: 2}}
+    window_days: 180
+    thresholds: {medium: 1, high: 3}
+    value_template: "{count} poor satisfaction rating(s) in the last {window_days} days"
+
+  - name: champion_departed
+    specialist: relationship
+    description: A primary / champion contact has left.
+    rule: exists
+    entity: contact
+    cases:
+      - where: {is_primary: true, is_active: false}
+        severity: high
+        value_template: "Primary contact {name} has left ({title})"
+      - where: {is_active: false}
+        severity: medium
+        value_template: "Contact {name} has left ({title})"
+
+  - name: no_recent_activity
+    specialist: relationship
+    description: No logged meeting, call or task recently.
+    rule: days_since
+    entity: activity
+    date_field: activity_date
+    thresholds: {medium: 60, high: 90}
+    value_template: "No logged activity in {days} days (last on {last_date})"
+    gap_template: "no_recent_activity not evaluated — no dated activity records"
+
+  - name: low_engagement
+    specialist: relationship
+    description: Very few people engaged on the renewal.
+    rule: count
+    entity: contact
+    where: {is_active: {ne: false}}
+    direction: below
+    thresholds: {medium: 1}
+    value_template: "Only {count} active contact(s) engaged on the renewal"
+
+  # ----------------------------------------------------------------- financial
+  - name: invoice_overdue
+    specialist: financial
+    description: Unpaid invoices past their due date.
+    rule: count
+    entity: invoice
+    where: {is_paid: false, due_date: {lt: $as_of}}
+    thresholds: {medium: 1, high: 2}
+    value_template: "{count} unpaid invoice(s) past due"
+
+  - name: payment_failures
+    specialist: financial
+    description: Failed payment attempts in the last 90 days.
+    rule: count
+    entity: payment
+    where: {is_failed: true}
+    window_days: 90
+    thresholds: {medium: 1, high: 3}
+    value_template: "{count} failed payment(s) in the last {window_days} days"
+
+  - name: payment_disputes
+    specialist: financial
+    description: Disputed / charged-back payments.
+    rule: count
+    entity: payment
+    where: {is_disputed: true}
+    window_days: 365
+    thresholds: {high: 1}
+    value_template: "{count} disputed payment(s) in the last year"
+
+  # --------------------------------------------------------------------- usage
+  - name: usage_decline
+    specialist: usage
+    description: Product usage fell vs the previous period. Set `where.metric` to your key usage metric.
+    rule: window_change
+    entity: usage_metric
+    where: {metric: active_users}
+    field: value
+    agg: avg
+    date_field: period_start
+    window_days: 30
+    direction: decrease
+    thresholds: {medium: 20, high: 40}
+    value_template: "Average active users {recent:,.0f} in the last {window_days} days vs {prior:,.0f} before ({change:+.0f}%)"
+
+  - name: seat_utilisation
+    specialist: usage
+    description: Active users as a share of licensed seats.
+    rule: ratio
+    numerator:   {entity: usage_metric, field: value, where: {metric: active_users}, agg: "latest:period_start"}
+    denominator: {entity: line_item, field: quantity, where: {is_active: {ne: false}}, agg: sum}
+    direction: below
+    thresholds: {medium: 0.6, high: 0.4}
+    value_template: "{numerator:,.0f} active users on {denominator:,.0f} licensed seats ({ratio:.0%} utilisation)"
+
+  # ------------------------------------------------- IT services (delivery etc.)
+  - name: sow_ending_no_renewal
+    specialist: commercial
+    description: A contract / SOW ends within 90 days and no renewal or extension is open.
+    rule: absent
+    trigger:  {entity: contract, where: {end_date: {within_next_days: 90}}, pick: "earliest:end_date"}
+    expected: {entity: renewal, where: {is_open: true}}
+    severity: high
+    value_template: "Contract {id} ends on {end_date} and no renewal or extension is in the pipeline"
+
+  - name: budget_overrun
+    specialist: delivery
+    description: A project has consumed more budget than planned.
+    rule: pct_change
+    current:  {entity: project, field: budget_consumed, where: {is_active: {ne: false}}, per_record: true}
+    baseline: {field: budget, same_record: true}
+    direction: increase
+    thresholds: {medium: 10, high: 25}
+    value_template: "{name} is {pct:.0f}% over budget ({current:,.0f} used of {baseline:,.0f})"
+
+  - name: schedule_slip
+    specialist: delivery
+    description: A project's forecast end is later than its planned end.
+    rule: date_diff
+    entity: project
+    where: {is_active: {ne: false}}
+    start_field: planned_end
+    end_field: forecast_end
+    thresholds: {medium: 14, high: 30}
+    value_template: "{name} is forecast to finish {days} days late ({forecast_end} vs planned {planned_end})"
+
+  - name: project_red
+    specialist: delivery
+    description: A running project is red or amber.
+    rule: exists
+    entity: project
+    where: {is_active: {ne: false}}
+    cases:
+      - where: {rag: [red, r]}
+        severity: high
+        value_template: "{name} is RED (since {rag_changed_at})"
+      - where: {rag: [amber, a, yellow]}
+        severity: medium
+        value_template: "{name} is AMBER (since {rag_changed_at})"
+
+  - name: missed_milestones
+    specialist: delivery
+    description: Milestones past their due date and not completed.
+    rule: count
+    entity: milestone
+    where: {is_completed: {ne: true}, due_date: {lt: $as_of}}
+    thresholds: {medium: 1, high: 3}
+    value_template: "{count} milestone(s) overdue and not delivered"
+
+  - name: billable_hours_drop
+    specialist: delivery
+    description: Billable hours logged for the client fell vs the previous period (work winding down).
+    rule: window_change
+    entity: time_entry
+    where: {is_billable: true}
+    field: hours
+    agg: sum
+    date_field: work_date
+    window_days: 30
+    direction: decrease
+    thresholds: {medium: 25, high: 50}
+    value_template: "Billable hours {recent:,.0f} in the last {window_days} days vs {prior:,.0f} before ({change:+.0f}%)"
+
+  - name: open_escalations
+    specialist: relationship
+    description: Formal client escalations still open.
+    rule: count
+    entity: escalation
+    where: {is_open: true}
+    thresholds: {medium: 1, high: 2}
+    value_template: "{count} open client escalation(s)"

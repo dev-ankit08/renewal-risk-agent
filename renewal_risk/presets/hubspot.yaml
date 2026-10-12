@@ -1,0 +1,158 @@
+label: HubSpot
+description: HubSpot CRM — companies, deals, tickets, contacts, meetings.
+setup_notes: |
+  Create a private app (Settings > Integrations > Private apps) with read scopes:
+  crm.objects.companies.read, crm.objects.deals.read, crm.objects.contacts.read,
+  tickets, and sales-email-read / meetings as needed. Put its token in an env var.
+  HubSpot returns an owner id, not an email: scope access.yaml by region/segment,
+  or map owner_email via an override if you sync owner emails into a company property.
+  Can be the primary source (accounts + renewals) or a secondary one (`customer` entity).
+auth_methods:
+  - method: oauth2
+    label: Sign in with HubSpot (OAuth)
+    help: "In a free HubSpot developer account create an app, set the redirect URL to {callback_url}, add the read scopes listed above; paste its client id and secret."
+    params:
+      client_id: {required: true, label: Client ID}
+      client_secret: {required: true, secret: true, label: Client secret}
+    oauth:
+      authorize_url: https://app.hubspot.com/oauth/authorize
+      token_url: https://api.hubapi.com/oauth/v1/token
+      scopes: "crm.objects.companies.read crm.objects.deals.read crm.objects.contacts.read tickets"
+      pkce: false
+    set: {connection: {auth: {type: oauth2}}}
+  - method: token
+    label: Private app token
+    help: "Settings > Integrations > Private apps: create one with the read scopes listed above."
+    params:
+      access_token: {required: true, secret: true, label: Access token}
+    set: {connection: {auth: {type: bearer, token: "{{access_token}}"}}}
+
+type: rest
+connection:
+  base_url: https://api.hubapi.com
+  pagination: {type: cursor, cursor_path: paging.next.after, param: after}
+  health_path: /crm/v3/objects/companies?limit=1
+
+entities:
+  account:
+    fetch:
+      request: {path: "/crm/v3/objects/companies/{link_value}", params: {properties: "name,domain,country,industry,createdate,hs_lastmodifieddate"}, records_path: "$", pagination: {type: none}}
+    list:
+      request: {path: /crm/v3/objects/companies, params: {limit: 100, properties: "name,domain,country,industry,createdate,hs_lastmodifieddate"}, records_path: results}
+    search:
+      request:
+        method: POST
+        path: /crm/v3/objects/companies/search
+        json: {query: "{text}", limit: 20, properties: [name, domain, country, industry, createdate]}
+        records_path: results
+        pagination: {type: none}
+    describe: &company_describe
+      request: {path: /crm/v3/properties/companies, records_path: results, pagination: {type: none}}
+      path_prefix: "properties."
+    fields:
+      id: id
+      name: properties.name
+      domain: "properties.domain | domain"
+      region: properties.country
+      industry: properties.industry
+      created_at: "properties.createdate | date"
+      updated_at: "properties.hs_lastmodifieddate | date"
+
+  customer:
+    describe: *company_describe
+    list:
+      request: {path: /crm/v3/objects/companies, params: {limit: 100, properties: "name,domain,createdate"}, records_path: results}
+    fields:
+      id: id
+      name: properties.name
+      domain: "properties.domain | domain"
+      created_at: "properties.createdate | date"
+
+  renewal:
+    describe:
+      request: {path: /crm/v3/properties/deals, records_path: results, pagination: {type: none}}
+      path_prefix: "properties."
+    fetch:
+      request:
+        method: POST
+        path: /crm/v3/objects/deals/search
+        json:
+          filterGroups: [{filters: [{propertyName: associations.company, operator: EQ, value: "{link_value}"}]}]
+          properties: [dealname, amount, closedate, dealstage, hs_is_closed, hs_date_entered_closedwon, createdate, hs_lastmodifieddate]
+          limit: 100
+        records_path: results
+        pagination: {type: cursor, cursor_path: paging.next.after, param: after, in: body}
+    list:
+      request:
+        path: /crm/v3/objects/deals
+        params: {limit: 100, associations: companies, properties: "dealname,amount,closedate,dealstage,hs_is_closed,createdate"}
+        records_path: results
+    fields:
+      id: id
+      account_id: "associations.companies.results[0].id"
+      name: properties.dealname
+      amount: properties.amount
+      close_date: "properties.closedate | date"
+      stage: properties.dealstage
+      is_open: "properties.hs_is_closed | not"
+      created_at: "properties.createdate | date"
+      updated_at: "properties.hs_lastmodifieddate | date"
+
+  ticket:
+    describe:
+      request: {path: /crm/v3/properties/tickets, records_path: results, pagination: {type: none}}
+      path_prefix: "properties."
+    fetch:
+      request:
+        method: POST
+        path: /crm/v3/objects/tickets/search
+        json:
+          filterGroups: [{filters: [{propertyName: associations.company, operator: EQ, value: "{link_value}"}]}]
+          properties: [hs_pipeline_stage, hs_ticket_priority, createdate, closed_date, hs_lastmodifieddate]
+          limit: 100
+        records_path: results
+        pagination: {type: cursor, cursor_path: paging.next.after, param: after, in: body}
+    fields:
+      id: id
+      status: properties.hs_pipeline_stage
+      is_open: "properties.closed_date | empty"
+      priority: "properties.hs_ticket_priority | lower"
+      opened_at: "properties.createdate | date"
+      closed_at: "properties.closed_date | date"
+      created_at: "properties.createdate | date"
+      updated_at: "properties.hs_lastmodifieddate | date"
+
+  contact:
+    fetch:
+      request:
+        method: POST
+        path: /crm/v3/objects/contacts/search
+        json:
+          filterGroups: [{filters: [{propertyName: associations.company, operator: EQ, value: "{link_value}"}]}]
+          properties: [firstname, jobtitle, createdate, lastmodifieddate]
+          limit: 100
+        records_path: results
+        pagination: {type: none}
+    fields:
+      id: id
+      name: properties.firstname
+      title: properties.jobtitle
+      created_at: "properties.createdate | date"
+      updated_at: "properties.lastmodifieddate | date"
+
+  activity:
+    fetch:
+      request:
+        method: POST
+        path: /crm/v3/objects/meetings/search
+        json:
+          filterGroups: [{filters: [{propertyName: associations.company, operator: EQ, value: "{link_value}"}]}]
+          properties: [hs_timestamp, hs_createdate]
+          limit: 100
+        records_path: results
+        pagination: {type: none}
+    fields:
+      id: id
+      type: "'meeting'"
+      activity_date: "properties.hs_timestamp | date"
+      created_at: "properties.hs_createdate | coalesce('properties.hs_timestamp') | date"

@@ -1,0 +1,72 @@
+# Built-in defaults. The business-type pack (renewal_risk/packs/) is merged
+# over this, then config/agent.yaml over that — a company only writes the keys
+# it wants to change.
+
+pack: saas                  # saas | it_services
+
+llm:
+  coordinator_model: claude-opus-5-5
+  specialist_model: claude-sonnet-5-5
+  synthesis_model: claude-opus-5-5
+  effort: medium            # low | medium | high — how hard each call thinks
+  max_tokens: 16000
+  # On a safety-classifier decline, the API re-runs the call on a fallback
+  # model inside the same request (server-side fallback, "default" routing).
+  refusal_fallback: true
+  use_coordinator: true     # false = skip the planning call, run every specialist that has data
+  # $ per million tokens, for the cost recorded with each assessment.
+  # Check current pricing before quoting these numbers anywhere.
+  rates:
+    claude-opus-5-5: {input: 4.00, output: 20.00}
+    claude-sonnet-5-5: {input: 2.00, output: 10.00}
+    claude-haiku-4-5: {input: 1.00, output: 5.00}
+
+# Which standard entities each specialist reads. A specialist only runs when
+# at least one of its entities is provided by some source.
+specialists:
+  commercial:
+    entities: [renewal, contract, line_item]
+    focus: >-
+      Commercial health of the renewal: deal value vs current contract value,
+      product / seat reductions, scheduled cancellations, a stalled deal.
+  relationship:
+    entities: [ticket, contact, activity]
+    focus: >-
+      The customer relationship: support load and escalations, satisfaction,
+      who is engaged and whether the champion is still there, how recently
+      anyone talked to the customer.
+  financial:
+    entities: [invoice, payment]
+    focus: >-
+      Payment behaviour: overdue invoices, failed or disputed payments — early
+      signs of budget pressure or intent to leave.
+  usage:
+    entities: [usage_metric, line_item]
+    focus: >-
+      Product adoption: usage trend and how much of what they pay for they use.
+
+policy:
+  # Customer data from every source is sent to the Anthropic API in specialist
+  # prompts. Confirm a Zero Data Retention (or equivalent) agreement covers
+  # your Anthropic organization, then set this true (or set the env var
+  # RENEWAL_AGENT_ZDR_CONFIRMED=true). Sources marked `test_data: true` in
+  # connectors.yaml are exempt.
+  zdr_confirmed: false
+  max_records_per_entity: 200   # per account per entity, sent to a specialist
+
+bulk:
+  max_deep_assessments: 10      # paid full assessments per bulk question
+  reuse_assessment_hours: 24    # reuse a stored assessment younger than this
+
+schedule:
+  enabled: false
+  cron: "0 6 * * 1-5"           # weekdays 06:00, server local time
+  lookahead_days: 120           # renewals closing within this window are scanned
+  deep_assess: flagged          # flagged | all | none — which scanned accounts get a paid assessment
+  max_deep_assessments: 25
+
+linking:
+  cache_hours: 24
+
+store:
+  path: ""                      # default: <state dir>/renewal_risk.sqlite

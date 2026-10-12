@@ -1,0 +1,124 @@
+label: Salesforce
+description: Salesforce CRM — accounts, renewals (opportunities), contracts, assets, contact roles, activity, cases.
+setup_notes: |
+  Account fields are selected explicitly — custom label/answer-key fields are never read.
+  Standard Contract has no ARR field: map yours on the Field mapping screen (e.g. contract.arr <- ARR__c).
+
+auth_methods:
+  - method: oauth2
+    label: Sign in with Salesforce (OAuth)
+    help: |
+      In Salesforce Setup > External Client App Manager (or App Manager > New Connected App):
+      enable OAuth, set the callback URL to {callback_url}, add the scopes
+      "Manage user data via APIs (api)" and "Perform requests at any time (refresh_token, offline_access)",
+      then paste the Consumer Key and Consumer Secret here. Free in every edition with API access.
+    params:
+      client_id: {required: true, label: Consumer key}
+      client_secret: {required: true, secret: true, label: Consumer secret}
+      login_host: {default: login.salesforce.com, label: Login host, description: "test.salesforce.com for a sandbox, or your My Domain host"}
+    oauth:
+      authorize_url: "https://{{login_host}}/services/oauth2/authorize"
+      token_url: "https://{{login_host}}/services/oauth2/token"
+      scopes: "api refresh_token"
+      pkce: true
+    set: {type: salesforce_rest}
+  - method: cli
+    label: Use an sf CLI login on the server
+    help: |
+      Runs the official Salesforce MCP server (Node.js required). Authorise once on the host:
+      sf org login web --alias <alias>   (or `sf org login jwt` for servers).
+    params:
+      org_alias: {required: true, label: Org alias, description: "alias authorised with `sf org login`"}
+      toolsets: {default: data, label: MCP toolsets, description: "`data` has run_soql_query and no write tools"}
+    set: {type: salesforce, org_alias: "{{org_alias}}", toolsets: "{{toolsets}}"}
+
+entities:
+  account:
+    fetch:
+      soql: "SELECT Id, Name, Website, Owner.Email, Owner.Name, BillingCountry, Industry, Type, CreatedDate, LastModifiedDate FROM Account WHERE Id = '{link_value}' LIMIT 1"
+      as_of: false
+    list:
+      soql: "SELECT Id, Name, Website, Owner.Email, Owner.Name, BillingCountry, Industry, Type, CreatedDate, LastModifiedDate FROM Account ORDER BY Name LIMIT 2000"
+    search:
+      soql: "SELECT Id, Name, Website, Owner.Email, Owner.Name, BillingCountry, Industry, Type, CreatedDate FROM Account WHERE Name LIKE '%{text}%' ORDER BY Name LIMIT 20"
+    fields:
+      id: Id
+      name: Name
+      domain: "Website | domain"
+      owner_email: "Owner.Email | lower"
+      owner_name: Owner.Name
+      region: BillingCountry
+      industry: Industry
+      segment: Type
+      created_at: "CreatedDate | date"
+      updated_at: "LastModifiedDate | date"
+
+  renewal:
+    fetch: {object: Opportunity, account_field: AccountId}
+    list:
+      soql: "SELECT Id, AccountId, Account.Name, Name, Amount, CloseDate, StageName, IsClosed, LastStageChangeDate, CreatedDate, LastModifiedDate FROM Opportunity WHERE IsClosed = false AND CloseDate <= {before} AND CloseDate >= {after} ORDER BY CloseDate ASC LIMIT 2000"
+    fields:
+      id: Id
+      account_id: AccountId
+      account_name: Account.Name
+      name: Name
+      amount: Amount
+      close_date: "CloseDate | date"
+      stage: StageName
+      is_open: "IsClosed | not"
+      stage_changed_at: "LastStageChangeDate | date"
+      created_at: "CreatedDate | date"
+      updated_at: "LastModifiedDate | date"
+
+  contract:
+    fetch: {object: Contract, account_field: AccountId}
+    fields:
+      id: Id
+      status: Status
+      start_date: "StartDate | date"
+      end_date: "EndDate | date"
+      term_months: ContractTerm
+      created_at: "CreatedDate | date"
+      updated_at: "LastModifiedDate | date"
+
+  line_item:
+    fetch: {object: Asset, account_field: AccountId}
+    fields:
+      id: Id
+      product: Name
+      quantity: Quantity
+      status: Status
+      created_at: "CreatedDate | date"
+      updated_at: "LastModifiedDate | date"
+
+  contact:
+    # Contact roles on this account's opportunities: who is engaged on the renewal.
+    fetch:
+      soql: "SELECT Id, ContactId, Contact.Name, Contact.Title, IsPrimary, Role, CreatedDate, LastModifiedDate FROM OpportunityContactRole WHERE Opportunity.AccountId = '{link_value}' LIMIT 200"
+    fields:
+      id: Id
+      name: Contact.Name
+      title: Contact.Title
+      role: Role
+      is_primary: IsPrimary
+      created_at: "CreatedDate | date"
+      updated_at: "LastModifiedDate | date"
+
+  activity:
+    - fetch: {object: Task, account_field: AccountId}
+      fields: {id: Id, type: "'task'", activity_date: "ActivityDate | date", created_at: "CreatedDate | date", updated_at: "LastModifiedDate | date"}
+    - fetch: {object: Event, account_field: AccountId}
+      fields: {id: Id, type: "'meeting'", activity_date: "ActivityDate | date", created_at: "CreatedDate | date", updated_at: "LastModifiedDate | date"}
+
+  ticket:
+    fetch: {object: Case, account_field: AccountId}
+    fields:
+      id: Id
+      status: Status
+      is_open: "IsClosed | not"
+      priority: "Priority | lower"
+      is_escalated: IsEscalated
+      opened_at: "CreatedDate | date"
+      closed_at: "ClosedDate | date"
+      created_at: "CreatedDate | date"
+      updated_at: "LastModifiedDate | date"

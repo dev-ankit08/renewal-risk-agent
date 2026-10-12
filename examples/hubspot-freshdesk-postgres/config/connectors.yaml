@@ -1,0 +1,33 @@
+# HubSpot as the CRM, Freshdesk for support, product usage in Postgres.
+primary: crm
+
+sources:
+  crm:
+    preset: hubspot
+    access_token: ${ENV:HUBSPOT_TOKEN}
+  support:
+    preset: freshdesk
+    domain: acme.freshdesk.com
+    api_key: ${ENV:FRESHDESK_API_KEY}
+  usage:
+    type: sql
+    dsn: ${ENV:USAGE_DB_DSN}            # postgresql+psycopg://reader:...@db/analytics  (pip install psycopg)
+    entities:
+      usage_metric:
+        fetch:
+          query: >-
+            SELECT hubspot_company_id || '-' || day AS id, 'active_users' AS metric, day, active_users AS value
+            FROM daily_usage WHERE hubspot_company_id = :link_value AND day <= :as_of
+            ORDER BY day DESC LIMIT 120
+        fields: {id: id, metric: metric, period_start: "day | date", value: value, created_at: "day | date"}
+      line_item:
+        fetch:
+          query: "SELECT plan_id AS id, plan_name, seats, status, created_at FROM subscriptions WHERE hubspot_company_id = :link_value"
+        fields: {id: id, product: plan_name, quantity: seats, status: status, is_active: "status | eq('active')", created_at: "created_at | date"}
+
+linking:
+  support:
+    - match: domain
+    - match: fuzzy_name
+  usage:
+    - match: same_id                    # the warehouse already keys usage by HubSpot company id

@@ -1,0 +1,8 @@
+policy:
+  zdr_confirmed: false        # set true once your Anthropic org has Zero Data Retention confirmed
+schedule:
+  enabled: true
+  cron: "0 6 * * 1-5"
+  lookahead_days: 120
+  deep_assess: flagged
+  max_deep_assessments: 25

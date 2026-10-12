@@ -1,0 +1,44 @@
+label: Freshdesk
+description: Freshdesk — tickets per company, priority, escalation.
+setup_notes: |
+  Profile settings > API key. Use an agent with read access to tickets and companies.
+  Linking: companies carry `domains`; use `match: domain` (or a custom field via an override).
+params:
+  domain: {required: true, label: Helpdesk host, description: "e.g. acme.freshdesk.com"}
+
+auth_methods:
+  - method: token
+    label: API key
+    help: "Profile settings > View API key (an agent with read access to tickets and companies)."
+    params:
+      api_key: {required: true, secret: true, label: API key}
+
+type: rest
+connection:
+  base_url: "https://{{domain}}"
+  auth: {type: basic, username: "{{api_key}}", password: X}
+  pagination: {type: page, param: page, page_size: 100}
+  health_path: /api/v2/companies?per_page=1
+
+entities:
+  customer:
+    list:
+      request: {path: /api/v2/companies, params: {per_page: 100}, records_path: "$"}
+    fields:
+      id: id
+      name: name
+      domain: "domains | domain"
+      created_at: "created_at | date"
+
+  ticket:
+    fetch:
+      request: {path: /api/v2/tickets, params: {company_id: "{link_value}", per_page: 100}, records_path: "$"}
+    fields:
+      id: id
+      status: {expr: status, map: {2: open, 3: pending, 4: resolved, 5: closed}, passthrough: true}
+      is_open: "status | in(2, 3)"
+      priority: {expr: priority, map: {1: low, 2: medium, 3: high, 4: urgent}}
+      is_escalated: is_escalated
+      opened_at: "created_at | date"
+      created_at: "created_at | date"
+      updated_at: "updated_at | date"

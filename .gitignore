@@ -1,15 +1,31 @@
 __pycache__/
 *.pyc
 .venv/
+*.egg-info/
+build/
+.pytest_cache/
 
-# Generated run output — regenerate with `python3 run.py --dry-run`
-briefs/*.md
-briefs.csv
+# Runtime state: link cache, sqlite store (assessments, ledger, alerts)
+state/
 runs.sqlite
+
+# Generated output
+briefs/
+briefs.csv
 faithfulness_worksheet.csv
 
-# Real credentials — never commit
+# Credentials — never commit
 .env
 
-# Real golden set (may contain real account data) — the example stays tracked
+# A company's own config and approved links stay out of this repo
+/config/
+
+# Real golden set (may contain real account data); the example stays tracked
 golden_set.csv
+
+# Demo data is generated (examples/*/generate.py)
+examples/*/data/
+
+# Admin UI: dependencies and the build output (built by `npm run build` in web/ or the Dockerfile)
+web/node_modules/
+renewal_risk/admin/static/

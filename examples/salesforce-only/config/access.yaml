@@ -1,0 +1,5 @@
+users:
+  - email: admin@example.com          # replace with your Slack / API identity
+    role: admin
+api_keys:
+  - {name: local, key: "${ENV:RISK_API_KEY:-}", as: admin@example.com}

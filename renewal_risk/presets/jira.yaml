@@ -1,0 +1,86 @@
+label: Jira
+description: Jira Cloud — client projects, releases (milestones) and escalation issues.
+setup_notes: |
+  Works on Jira Cloud's free plan. Each Jira project is treated as one client's
+  delivery project: match projects to CRM accounts on the Account matching screen
+  (similar names are suggested for review, or set a project category / key mapping).
+  Escalations are issues labelled `escalation` or at Highest priority — change the
+  JQL on the Field mapping screen if you flag them differently.
+params:
+  site: {required: true, label: Site, description: "the part before .atlassian.net"}
+
+auth_methods:
+  - method: token
+    label: Email + API token
+    help: "id.atlassian.com > Security > Create and manage API tokens. Use an account that can browse the client projects."
+    params:
+      email: {required: true, label: Atlassian account email}
+      api_token: {required: true, secret: true, label: API token}
+    set: {connection: {auth: {type: basic, username: "{{email}}", password: "{{api_token}}"}}}
+
+type: rest
+connection:
+  base_url: "https://{{site}}.atlassian.net"
+  pagination: {type: none}
+  health_path: /rest/api/3/myself
+
+entities:
+  customer:
+    list:
+      request:
+        path: /rest/api/3/project/search
+        params: {maxResults: 50}
+        records_path: values
+        pagination: {type: offset, param: startAt}
+    fields:
+      id: key
+      name: name
+
+  project:
+    # Jira has no budget or RAG status: map those from your PSA, or add custom
+    # project properties on the Field mapping screen.
+    fetch:
+      request: {path: "/rest/api/3/project/{link_value}", records_path: "$"}
+    fields:
+      id: key
+      name: name
+      status: projectTypeKey
+      is_active: "archived | not"
+
+  milestone:
+    fetch:
+      request: {path: "/rest/api/3/project/{link_value}/versions", records_path: "$"}
+    fields:
+      id: id
+      project_id: projectId
+      name: name
+      due_date: "releaseDate | date"
+      is_completed: released
+      status: "released | eq(true)"
+      created_at: "startDate | date"
+
+  escalation:
+    describe:
+      request: {path: /rest/api/3/field, records_path: "$"}
+      name: id
+      label: name
+      type: schema.type
+      path_prefix: "fields."
+    fetch:
+      request:
+        path: /rest/api/3/search/jql
+        params:
+          jql: 'project = "{link_value}" AND (labels = escalation OR priority = Highest) AND created <= "{as_of}" ORDER BY created DESC'
+          fields: "status,priority,created,updated,resolutiondate"
+          maxResults: 100
+        records_path: issues
+        pagination: {type: cursor, cursor_path: nextPageToken, param: nextPageToken}
+    fields:
+      id: key
+      severity: "fields.priority.name | lower"
+      status: fields.status.name
+      is_open: "fields.resolutiondate | empty"
+      opened_at: "fields.created | date"
+      closed_at: "fields.resolutiondate | date"
+      created_at: "fields.created | date"
+      updated_at: "fields.updated | date"

@@ -1,0 +1,48 @@
+# Business-type pack: B2B SaaS / subscription companies.
+# A pack decides what the setup wizard asks for, which signals are on by
+# default, the default playbook, and the words the UI and Slack use.
+label: B2B SaaS
+description: Subscription renewals — risk from the CRM, billing, support and product usage.
+
+terminology:
+  account: customer
+  accounts: customers
+  renewal: renewal
+  renewals: renewals
+  owner_role: Customer success manager
+
+# Setup wizard: one card per category; each offers the systems whose preset provides these entities.
+categories:
+  - key: accounts
+    label: Customers & renewals
+    description: Your customer list, renewal deals, contracts and contacts — usually the CRM.
+    entities: [account, renewal, contract, line_item, contact, activity]
+    required: true
+  - key: billing
+    label: Billing & payments
+    description: Subscriptions, invoices and payments.
+    entities: [invoice, payment, contract, line_item]
+  - key: support
+    label: Support
+    description: Support tickets, priorities, escalations and satisfaction.
+    entities: [ticket]
+  - key: usage
+    label: Product usage
+    description: Active users, seats used, key product events — usually a product database or warehouse.
+    entities: [usage_metric]
+
+signals: [amount_decrease, opp_stalled, contract_downgrade, cancellation_scheduled, case_volume_spike,
+          open_ticket_backlog, support_escalation, high_priority_tickets, poor_satisfaction, champion_departed,
+          no_recent_activity, low_engagement, invoice_overdue, payment_failures, payment_disputes,
+          usage_decline, seat_utilisation]
+
+# Specialists come from renewal_risk/defaults/agent.yaml (commercial, relationship, financial, usage).
+
+playbooks:
+  owner_roles: [Account owner, Customer success manager, Support lead, Finance, Executive sponsor]
+  plays:
+    - {signals: [champion_departed], action: "Identify and meet the new decision-maker; re-run the value review with them", owner_role: Account owner, due_in_days: 14}
+    - {signals: [support_escalation, high_priority_tickets], action: "Support lead owns the escalated tickets and sends the customer a written recovery plan", owner_role: Support lead, due_in_days: 7}
+    - {signals: [invoice_overdue, payment_failures, payment_disputes], action: "Finance contacts the customer's AP team and agrees a payment plan before renewal talks", owner_role: Finance, due_in_days: 7}
+    - {signals: [usage_decline, seat_utilisation], action: "Run an adoption workshop and right-size seats before the renewal quote", owner_role: Customer success manager, due_in_days: 21}
+    - {signals: [amount_decrease, contract_downgrade, cancellation_scheduled], action: "Executive call on renewal scope and commercial terms", owner_role: Executive sponsor, due_in_days: 10}

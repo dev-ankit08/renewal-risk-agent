@@ -1,0 +1,10 @@
+mode: socket
+bot_token: ${ENV:SLACK_BOT_TOKEN}
+app_token: ${ENV:SLACK_APP_TOKEN}
+command: /renewal-risk
+reply_visibility: ephemeral
+alerts:
+  channel: "#renewal-risk"
+  dm_owner: true
+  dm_roles: [director]
+  min_band: high

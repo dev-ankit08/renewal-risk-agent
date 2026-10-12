@@ -1,0 +1,23 @@
+# Company-approved responses. Synthesis prefers these when their signals are present.
+owner_roles: [Account owner, Customer success manager, Project director, Support lead, Finance]
+plays:
+  - signals: [champion_departed]
+    action: Identify and meet the new decision-maker; re-run the value review with them
+    owner_role: Account owner
+    due_in_days: 14
+  - signals: [support_escalation, high_priority_tickets]
+    action: Support lead to own the escalated tickets and send the customer a written recovery plan
+    owner_role: Support lead
+    due_in_days: 7
+  - signals: [invoice_overdue, payment_failures, payment_disputes]
+    action: Finance to contact the customer's AP team and agree a payment plan before renewal talks
+    owner_role: Finance
+    due_in_days: 7
+  - signals: [usage_decline, seat_utilisation]
+    action: Run an adoption workshop and right-size the seat count before the renewal quote
+    owner_role: Customer success manager
+    due_in_days: 21
+  - signals: [amount_decrease, contract_downgrade, cancellation_scheduled]
+    action: Project director to join an executive call on the renewal scope and commercial terms
+    owner_role: Project director
+    due_in_days: 10

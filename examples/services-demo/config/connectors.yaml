@@ -1,0 +1,77 @@
+# Offline demo for the IT services pack: CRM + PSA + escalation desk + finance, all CSV exports.
+#   python examples/services-demo/generate.py
+#   renewal-risk --config examples/services-demo/config setup check --account C001
+primary: crm
+
+sources:
+  crm:
+    type: csv
+    path: ../data/crm
+    test_data: true
+    entities:
+      account:
+        list: {file: clients.csv}
+        fetch: {file: clients.csv, match: ClientId}
+        fields: {id: ClientId, name: ClientName, domain: "Website | domain", owner_email: AccountManager,
+                 portfolio: Practice, region: Region, created_at: "Created | date"}
+      renewal:
+        fetch: {file: opportunities.csv, match: ClientId}
+        list: {file: opportunities.csv}
+        fields: {id: OppId, account_id: ClientId, account_name: ClientName, name: Title, amount: Value,
+                 close_date: "ExpectedClose | date", stage: Stage, is_open: "Status | eq('Open')", created_at: "Created | date"}
+      contract:
+        fetch: {file: sows.csv, match: ClientId}
+        fields: {id: SowId, arr: AnnualValue, status: Status, start_date: "Start | date", end_date: "End | date", created_at: "Created | date"}
+      contact:
+        fetch: {file: contacts.csv, match: ClientId}
+        fields: {id: ContactId, name: FullName, title: JobTitle, is_primary: "Sponsor | bool", is_active: "Active | bool", created_at: "Created | date"}
+      activity:
+        fetch: {file: meetings.csv, match: ClientId}
+        fields: {id: MeetingId, type: Kind, activity_date: "Date | date", created_at: "Date | date"}
+
+  psa:                        # professional-services automation export
+    type: csv
+    path: ../data/psa
+    test_data: true
+    entities:
+      project:
+        fetch: {file: projects.csv, match: ClientId}
+        fields: {id: ProjectId, name: ProjectName, status: Phase, rag: "Health | lower", rag_changed_at: "HealthSince | date",
+                 budget: BudgetHours, budget_consumed: ActualHours, start_date: "StartDate | date", planned_end: "PlannedEnd | date",
+                 forecast_end: "ForecastEnd | date", is_active: "Phase | ne('Closed')", created_at: "Created | date"}
+      milestone:
+        fetch: {file: milestones.csv, match: ClientId}
+        fields: {id: MilestoneId, project_id: ProjectId, name: Name, due_date: "Due | date", is_completed: "Done | bool",
+                 completed_at: "DoneOn | date", created_at: "Created | date"}
+      change_request:
+        fetch: {file: change_requests.csv, match: ClientId}
+        fields: {id: CrId, project_id: ProjectId, status: Status, amount: Value, created_at: "Created | date"}
+      time_entry:
+        fetch: {file: timesheets.csv, match: ClientId}
+        fields: {id: EntryId, project_id: ProjectId, hours: Hours, is_billable: "Billable | bool", work_date: "WorkDate | date",
+                 created_at: "WorkDate | date"}
+
+  desk:                       # escalations, exported from Jira / ServiceNow
+    type: csv
+    path: ../data/desk
+    test_data: true
+    entities:
+      escalation:
+        fetch: {file: escalations.csv, match: ClientId}
+        fields: {id: Key, severity: "Priority | lower", status: Status, is_open: "Resolved | empty", opened_at: "Created | date",
+                 closed_at: "Resolved | date", created_at: "Created | date", updated_at: "Updated | date"}
+
+  finance:
+    type: csv
+    path: ../data/finance
+    test_data: true
+    entities:
+      invoice:
+        fetch: {file: invoices.csv, match: ClientId}
+        fields: {id: InvoiceNo, amount: Amount, amount_due: Balance, status: Status, is_paid: "Balance | num | eq(0)",
+                 due_date: "DueDate | date", created_at: "Issued | date"}
+
+linking:                      # every export already carries the CRM ClientId
+  psa: [{match: same_id}]
+  desk: [{match: same_id}]
+  finance: [{match: same_id}]
