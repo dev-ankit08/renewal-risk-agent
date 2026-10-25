@@ -87,7 +87,16 @@ def build_app(ctx: AppContext | None = None):
     terms = ctx.settings.pack.get("terminology") or {}
 
     def answer(principal: Principal, question: str) -> tuple[str, list]:
-        result = ctx.service.ask(principal, question)
+        """Always returns something to post: an error becomes a readable reply, never silence."""
+        started = time.time()
+        try:
+            result = ctx.service.ask(principal, question)
+        except (AccessDenied, ConnectorError, LLMError, PolicyError) as exc:
+            result = {"type": "error", "message": str(exc)}
+        except Exception as exc:  # noqa: BLE001 - the asker must hear back
+            print(f"slack: question from {principal.email} failed: {exc!r}", file=sys.stderr)
+            result = {"type": "error", "message": "Something went wrong while answering — the admin can see the details in the service log."}
+        print(f"slack: {principal.email} asked {question!r} -> {result.get('type')} in {time.time() - started:.1f}s", file=sys.stderr)
         return kit.answer_blocks(result, terms)
 
     @app.command(command)
@@ -101,6 +110,7 @@ def build_app(ctx: AppContext | None = None):
         ack(response_type="ephemeral", text=f":hourglass_flowing_sand: Looking into _{kit._escape(question)}_…")
         principal = identity.principal(command["user_id"])
         if principal is None:
+            print(f"slack: no access for user {command['user_id']}", file=sys.stderr)
             respond(response_type="ephemeral", text=NO_ACCESS)
             return
         text, body = answer(principal, question)
