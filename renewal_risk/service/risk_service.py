@@ -35,8 +35,9 @@ def screen_band(screen: dict) -> str:
 def assessment_view(result: dict) -> dict:
     """The shape every interface renders (API JSON, Slack blocks, CLI)."""
     a = result["assessment"]
+    how = result.get("explanations") or {}
     signals = [
-        {**s, "specialist": p["specialist"]}
+        {**s, "specialist": p["specialist"], "how_calculated": how.get(s["name"], "")}
         for p in result.get("packets", []) for s in p.get("signals", [])
     ]
     signals.sort(key=lambda s: -BAND_ORDER.get(s["severity"], 0))
@@ -65,6 +66,21 @@ class RiskService:
         self._directory: dict[str, dict] | None = None
         self._directory_at = 0.0
         self._directory_lock = threading.Lock()
+
+    @property
+    def settings(self):
+        return self.engine.settings
+
+    def after_assessment(self, result, send=None) -> dict:
+        """The view of a fresh assessment, after DMing its action owners
+        (service/action_notifier.py; a no-op without Slack)."""
+        view = assessment_view(result.to_dict())
+        try:
+            from .action_notifier import notify
+            notify(self, view, self.account(result.account_id) or {"id": result.account_id}, send)
+        except Exception as exc:  # noqa: BLE001 - notifications never fail an assessment
+            print(f"actions: notify failed for {result.account_id}: {exc}", file=sys.stderr)
+        return view
 
     # -- account directory (for scope checks) --------------------------------
 
@@ -124,7 +140,7 @@ class RiskService:
                 return {**assessment_view(stored), "from_cache": True}
             raise AccessDenied("There is no stored assessment for this account yet, and your role cannot start a new one.")
         result = self.engine.assess(account_id, as_of=as_of, account_name=account.get("name"))
-        return {**assessment_view(result.to_dict()), "from_cache": False}
+        return {**self.after_assessment(result), "from_cache": False}
 
     # -- portfolio / window --------------------------------------------------
 
@@ -160,7 +176,7 @@ class RiskService:
         def assess(row):
             try:
                 result = self.engine.assess(row["account_id"], account_name=row.get("name"))
-                return row["account_id"], assessment_view(result.to_dict()), result.cost_usd, None
+                return row["account_id"], self.after_assessment(result), result.cost_usd, None
             except (LLMError, PolicyError, ConnectorError) as exc:
                 return row["account_id"], None, 0.0, str(exc)
 

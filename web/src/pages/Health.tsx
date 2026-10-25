@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { api } from "../api";
+import { ActionSummary, api } from "../api";
 import { Notice, useLoad } from "../ui";
 
 interface HealthData {
@@ -10,6 +10,7 @@ interface HealthData {
   daily: { day: string; assessments: number; cost_usd: number; high: number }[];
   recent: { id: number; account_id: string; account_name: string; score: number; band: string; cost_usd: number; created_at: number }[];
   model_configured: boolean;
+  actions: ActionSummary;
 }
 
 export default function HealthPage() {
@@ -65,6 +66,12 @@ export default function HealthPage() {
               <h3>Last 30 days</h3>
               <p>{h.daily.reduce((s, d) => s + d.assessments, 0)} assessments · {h.daily.reduce((s, d) => s + (d.high || 0), 0)} high risk · ${totalCost.toFixed(2)} model cost</p>
               {!h.model_configured && <Notice kind="warn">ANTHROPIC_API_KEY is not set — full assessments and AI mapping are unavailable.</Notice>}
+            </div>
+            <div className="card">
+              <h3>Actions (last 30 days)</h3>
+              <p>{h.actions.open} open · {h.actions.done} done · <strong>{h.actions.overdue} overdue</strong>
+                {h.actions.completion_rate !== null && <> · {Math.round(h.actions.completion_rate * 100)}% completed</>}</p>
+              <p className="muted small">{h.actions.total} recommended actions sent to their owners. Details: Signals & playbooks › Owners & notifications.</p>
             </div>
           </div>
           <div className="card">

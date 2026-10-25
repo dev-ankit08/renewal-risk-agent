@@ -1,23 +1,46 @@
-# Company-approved responses. Synthesis prefers these when their signals are present.
-owner_roles: [Account owner, Customer success manager, Project director, Support lead, Finance]
+# Company-approved responses. Synthesis prefers these when their signals are present,
+# and each one is DM'd on Slack to the person its owner role resolves to for the account.
+owner_roles:
+  - {name: Account owner, find: {account_field: owner_email}}       # the account's owner in the CRM
+  - {name: Customer success manager, find: {account_field: owner_email}}
+  - {name: Project director, find: {access_role: director}}          # directors in access.yaml whose scope covers the account
+  - {name: Support lead, find: {emails: [admin@demo.example]}}       # a fixed person
+  - Finance                                                          # a plain name: shown, never DM'd
 plays:
-  - signals: [champion_departed]
+  - id: meet_new_decision_maker
+    name: Meet the new decision-maker
+    description: A departed champion is the most common silent churn cause; re-selling value early resets the relationship.
+    signals: [champion_departed]
     action: Identify and meet the new decision-maker; re-run the value review with them
+    steps: [Find who replaced the champion, Book a 30-minute value review, Share the success plan afterwards]
     owner_role: Account owner
+    priority: high
     due_in_days: 14
-  - signals: [support_escalation, high_priority_tickets]
+  - id: support_recovery_plan
+    name: Support recovery plan
+    signals: [support_escalation, high_priority_tickets]
+    min_severity: medium
     action: Support lead to own the escalated tickets and send the customer a written recovery plan
     owner_role: Support lead
     due_in_days: 7
-  - signals: [invoice_overdue, payment_failures, payment_disputes]
+  - id: agree_payment_plan
+    name: Agree a payment plan
+    signals: [invoice_overdue, payment_failures, payment_disputes]
     action: Finance to contact the customer's AP team and agree a payment plan before renewal talks
     owner_role: Finance
     due_in_days: 7
-  - signals: [usage_decline, seat_utilisation]
+  - id: adoption_workshop
+    name: Adoption workshop
+    signals: [usage_decline, seat_utilisation]
     action: Run an adoption workshop and right-size the seat count before the renewal quote
     owner_role: Customer success manager
     due_in_days: 21
-  - signals: [amount_decrease, contract_downgrade, cancellation_scheduled]
+  - id: executive_call
+    name: Executive call on scope and terms
+    description: When the customer is shrinking the deal, senior attention on both sides changes the outcome.
+    signals: [amount_decrease, contract_downgrade, cancellation_scheduled]
+    min_severity: high
     action: Project director to join an executive call on the renewal scope and commercial terms
     owner_role: Project director
+    priority: high
     due_in_days: 10

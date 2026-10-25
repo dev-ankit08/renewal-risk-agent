@@ -462,7 +462,8 @@ def cmd_serve(args) -> int:
     notifier = None
     if not args.no_slack and (ctx.settings.slack or {}).get("bot_token"):
         from .slack import app as slack_app
-        threading.Thread(target=slack_app.run, args=(ctx,), daemon=True, name="slack").start()
+        # block=False: socket mode's blocking start() installs a SIGINT handler, which only works on the main thread
+        threading.Thread(target=slack_app.run, args=(ctx,), kwargs={"block": False}, daemon=True, name="slack").start()
         notifier = slack_app.SlackNotifier(ctx)
         print("Slack app started (socket mode)." if ctx.settings.slack.get("mode", "socket") == "socket" else "Slack app started.")
     if scheduler.start_background(ctx, notifier):

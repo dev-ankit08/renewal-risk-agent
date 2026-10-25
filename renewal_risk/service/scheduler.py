@@ -52,6 +52,7 @@ def scan(ctx: AppContext, notifier=None, dry_run: bool = False) -> dict:
             continue
         summary["assessed"] += 1
         summary["cost_usd"] += result.cost_usd
+        view = assessment_view(result.to_dict()) if dry_run else ctx.service.after_assessment(result, getattr(notifier, "_dm", None))
         band = result.assessment["band"]
         previous = ctx.store.previous_band(account_id, before=started)
         last_alert = ctx.store.last_alert(account_id)
@@ -64,7 +65,7 @@ def scan(ctx: AppContext, notifier=None, dry_run: bool = False) -> dict:
         alert = {"account_id": account_id, "name": row.get("name"), "band": band, "previous_band": previous}
         if not dry_run and notifier is not None:
             account = ctx.service.account(account_id) or {"id": account_id}
-            alert["delivered_to"] = notifier.send_alert(assessment_view(result.to_dict()), account, previous)
+            alert["delivered_to"] = notifier.send_alert(view, account, previous)
         if not dry_run:
             ctx.store.record_alert(account_id, band, result.assessment["score"])
         summary["alerts"].append(alert)

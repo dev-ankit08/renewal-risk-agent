@@ -116,10 +116,40 @@ def test_admin_ui_end_to_end(server, page, ctx, demo_config, monkeypatch):
     page.get_by_role("button", name="Match", exact=True).first.click()
     page.get_by_text("83% matched").wait_for()
 
-    # 5. Signals, access, health render and save.
+    # 5. Signals: every row explains itself; build, test and save a custom signal; use it in a play.
     page.get_by_role("link", name="Signals & playbooks").click()
+    page.get_by_role("button", name="How it's calculated").first.click()
+    page.locator(".explain").first.wait_for()
+    page.get_by_role("button", name="+ New signal").click()
+    dialog = page.get_by_role("dialog")
+    dialog.get_by_label("signal name").fill("open_ticket_pileup")
+    dialog.get_by_label("record type").select_option("ticket")
+    dialog.get_by_role("button", name="+ condition").click()
+    dialog.get_by_label("condition field").select_option("is_open")
+    dialog.get_by_label("condition value").fill("true")
+    dialog.get_by_label("medium threshold").fill("2")
+    dialog.get_by_label("high threshold").fill("3")
+    dialog.get_by_text("Counts tickets that are open. Medium at 2 or more, high at 3 or more.").wait_for()
+    dialog.get_by_role("button", name="Test signal").click()
+    dialog.get_by_text("accounts would be flagged").wait_for()
+    assert dialog.locator("tr", has_text="A001").locator(".badge", has_text="high").count() == 1
+    dialog.get_by_role("button", name="Save signal").click()
+    page.get_by_text("open_ticket_pileup").wait_for()
     page.get_by_role("button", name="Save signals").click()
     page.get_by_text("Saved", exact=False).first.wait_for()
+    page.get_by_role("tab", name="Playbook").click()
+    page.get_by_role("button", name="+ Add play").click()
+    play = page.locator(".play").last
+    play.get_by_text("open_ticket_pileup").click()
+    play.get_by_label("recommended action").fill("Swarm the open tickets with the support lead")
+    play.get_by_role("button", name="Preview Slack DM").click()
+    play.locator(".dm").wait_for()
+    with page.expect_response(lambda r: r.url.endswith("/admin/api/playbooks") and r.request.method == "PUT") as saved:
+        page.get_by_role("button", name="Save playbook").click()
+    assert saved.value.ok
+    assert "open_ticket_pileup" in (demo_config / "playbooks.yaml").read_text(encoding="utf-8")
+    page.get_by_role("tab", name="Owners & notifications").click()
+    page.get_by_role("heading", name="Action DMs").wait_for()
     page.get_by_role("link", name="Access & Slack").click()
     page.get_by_role("heading", name="People").wait_for()
     page.get_by_role("link", name="Health & feedback").click()

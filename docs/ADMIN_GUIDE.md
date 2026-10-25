@@ -276,6 +276,11 @@ alerts:
   dm_owner: true                 # DM the account owner (if access.yaml lets them see it)
   dm_roles: [director]           # DM directors whose scope covers the account
   min_band: high
+actions:                         # recommended actions DM'd to their owners (section 6)
+  dm_owners: true
+  min_band: high                 # only for accounts at this band or above
+  snooze_days: 7                 # what the Snooze button means
+  cooldown_days: 30              # a closed action is not re-sent for this long
 ```
 
 Users can then:
@@ -296,20 +301,62 @@ assessment stored within the last `reuse_assessment_hours` is reused.
 
 ## 6. Signals, playbooks, schedule
 
+Everything in this section can be done on the **Signals & playbooks** screen,
+which has three tabs: **Signals**, **Playbook** and **Owners & notifications**.
+
+### Signals
+
 **Signals** ([defaults](../renewal_risk/defaults/signals.yaml)) cover
-commercial, relationship, financial and usage risk. Override them by name in
-`config/signals.yaml`:
+commercial, relationship, financial and usage risk. Every signal, built-in or
+custom, has a **How it's calculated** sentence that the agent generates from
+its definition, for example:
+
+> Counts tickets that are open. Medium at 2 or more, high at 3 or more.
+
+The same sentence appears on the admin screen, under each signal in Slack's
+**View evidence** dialog, in action DMs, on the Ask page and in briefs. Nobody
+has to guess what a number means.
+
+**Add your own signal.** Click **+ New signal** (or **Duplicate** on a
+built-in), then work through the three steps:
+
+1. **Describe it.** Write the warning sign in plain English, for example "flag
+   accounts with 3 or more open urgent tickets in the last 30 days", and press
+   **Draft with AI**. The agent fills in the form, but never saves on its own.
+   Without an AI key, build the signal directly in the form.
+2. **Build it.** Pick what to measure (count records, days since an event,
+   change vs the previous period, % difference, a ratio, days between two dates,
+   "a situation is present", "something expected is missing"). Then pick which
+   records and conditions, and set the thresholds. The fields offered are the
+   ones your connected systems actually provide, with their descriptions.
+
+   The **How it's calculated** box updates as you type. You can add your own
+   note under it, for example "agreed with the support team in Q3".
+3. **Test it.** Runs the signal on up to 20 accounts renewing soon, using real
+   data and no AI cost, and lists which accounts it would flag. Then **Save**.
+
+![Signals tab with a signal expanded to show how it is calculated](screenshots/10-signals.png)
+
+![New signal dialog: describe, build, test](screenshots/18-new-signal.png)
+
+Custom signals are stored in `config/signals.yaml` with `custom: true`, the
+author and timestamps. Every save is versioned, and saving thresholds never
+drops them. In YAML:
 
 ```yaml
 signals:
-  - {name: no_recent_activity, thresholds: {medium: 45, high: 75}}
-  - {name: usage_decline, where: {metric: weekly_active_users}}
-  - {name: poor_satisfaction, enabled: false}
-  - name: renewal_owner_missing            # a new signal
-    specialist: commercial
-    rule: exists
-    entity: renewal
-    cases: [{where: {is_open: true, stage: {null: true}}, severity: medium, value_template: "Open renewal {name} has no stage"}]
+  - {name: no_recent_activity, thresholds: {medium: 45, high: 75}}   # tune a built-in
+  - {name: poor_satisfaction, enabled: false}                        # switch one off
+  - name: urgent_ticket_pileup                                       # your own
+    custom: true
+    specialist: relationship
+    description: Several urgent tickets open at once.
+    rule: count
+    entity: ticket
+    where: {is_open: true, priority: [urgent, high]}
+    window_days: 30
+    thresholds: {medium: 2, high: 3}
+    how_calculated_note: Agreed with the support team in Q3.
 ```
 
 The rule types are count, ratio_vs_baseline, days_since, pct_change,
@@ -320,15 +367,61 @@ type's pack start switched off; you can switch any of them on.
 A signal whose data no source provides is switched off, and every brief lists
 it as a gap.
 
+### Playbook and action DMs
+
 **Playbooks** (`config/playbooks.yaml`) list your approved responses. When the
 matching signals are present, the synthesis step uses them and adapts each one
-to the account:
+to the account. It also records which play an action came from and one
+sentence on why it was recommended.
 
 ```yaml
-owner_roles: [Account owner, Customer success manager, Project director, Support lead, Finance]
+owner_roles:                       # who owns an action, and how to find that person per account
+  - {name: Account owner, find: {account_field: owner_email}}   # a field on the account
+  - {name: Project director, find: {access_role: director}}     # access.yaml users whose scope covers it
+  - {name: Finance, find: {emails: [ar@company.com]}}           # fixed people
+  - Executive sponsor                                           # a plain name: shown, never DM'd
 plays:
-  - {signals: [champion_departed], action: "Meet the new decision-maker and re-run the value review", owner_role: Account owner, due_in_days: 14}
+  - id: meet_new_decision_maker
+    name: Meet the new decision-maker
+    description: A departed champion is the most common silent churn cause.   # "why it works", shown to the owner
+    signals: [champion_departed]
+    min_severity: any                # or medium / high
+    action: Meet the new decision-maker and re-run the value review
+    steps: [Find who replaced the champion, Book a 30-minute value review]
+    owner_role: Account owner
+    priority: high
+    due_in_days: 14
+    link: https://wiki.company.com/playbooks/champion-loss   # your runbook
+    notify: true                     # DM the owner on Slack
 ```
+
+A plain role name in an older file still works. If the pack defines a role of
+the same name, the role uses that pack role's `find`.
+
+After an assessment at or above `slack.actions.min_band`, each recommended
+action is **DM'd on Slack to its owner**. The DM contains the action, why it
+was recommended, the steps, the due date, the runbook link and the evidence
+(with how each signal is calculated). It has three buttons:
+
+* **Done**
+* **Snooze** (for `snooze_days`)
+* **Not relevant**
+
+Safety rules:
+
+* A person is only DM'd about accounts that `access.yaml` lets them see.
+* An action that is still open or snoozed, or was closed in the last
+  `cooldown_days`, is not sent again.
+* Only the owner or an admin can press the buttons. Each click is also recorded
+  as feedback for the evaluation.
+
+![A play with its Slack DM preview](screenshots/11-playbook.png)
+
+![Owner roles, DM settings and actions sent](screenshots/19-owners-notifications.png)
+
+**Owners & notifications** shows the DM settings and every action sent, with
+its status. **Health** shows how many actions are open, done and overdue, and
+the completion rate.
 
 **Schedule** (`agent.yaml`):
 

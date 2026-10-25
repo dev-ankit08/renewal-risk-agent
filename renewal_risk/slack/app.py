@@ -180,6 +180,24 @@ def build_app(ctx: AppContext | None = None):
     app.action("rr_feedback_agree")(_feedback("agree"))
     app.action("rr_feedback_disagree")(_feedback("disagree"))
 
+    def _action_status(status: str):
+        """Done / Snooze / Not relevant on an action DM: only its owner (or an admin) may answer."""
+        def handler(ack, body, respond):
+            ack()
+            principal = identity.principal(body["user"]["id"])
+            item = update_action(ctx, principal, int(json.loads(body["actions"][0]["value"])["item_id"]), status)
+            if item is None:
+                respond(response_type="ephemeral", text="Only the owner of this action can update it.", replace_original=False)
+                return
+            kept = [b for b in (body.get("message") or {}).get("blocks", []) if b.get("type") != "actions"]
+            respond(replace_original=True, text=f"{item['action']} — {status.replace('_', ' ')}",
+                    blocks=kept + [kit.context(kit.ACTION_STATUS.get(status, status) + f" by {principal.email}")])
+        return handler
+
+    app.action("rr_action_done")(_action_status("done"))
+    app.action("rr_action_snooze")(_action_status("snoozed"))
+    app.action("rr_action_not_relevant")(_action_status("not_relevant"))
+
     @app.action("rr_rerun")
     def on_rerun(ack, body, respond):
         ack()
@@ -195,6 +213,17 @@ def build_app(ctx: AppContext | None = None):
             respond(response_type="ephemeral", text=str(exc), replace_original=False)
 
     return app
+
+
+def update_action(ctx: AppContext, principal, item_id: int, status: str) -> dict | None:
+    """Record Done / Snooze / Not relevant on an action item. Only its owner or an
+    admin may; returns the updated item, or None when not allowed."""
+    item = ctx.store.action_item(item_id)
+    if principal is None or item is None or (principal.email != item["owner_email"] and not principal.can("admin")):
+        return None
+    snooze = float(((ctx.settings.slack or {}).get("actions") or {}).get("snooze_days", 7)) if status == "snoozed" else None
+    ctx.store.add_feedback(item["account_id"], principal.email, note=f"action {status}: {item['action']}", assessment_id=item["assessment_id"])
+    return ctx.store.set_action_status(item["id"], status, snooze)
 
 
 def run(ctx: AppContext | None = None, block: bool = True):
@@ -230,11 +259,14 @@ class SlackNotifier:
         self.ctx = ctx
         self.cfg = cfg.get("alerts") or {}
         self.client = WebClient(token=cfg["bot_token"])
+        self._channels: dict[str, str] = {}  # email -> DM channel, looked up once per notifier
 
     def _dm(self, email: str, text: str, body: list) -> bool:
         try:
-            user = self.client.users_lookupByEmail(email=email)["user"]["id"]
-            channel = self.client.conversations_open(users=user)["channel"]["id"]
+            channel = self._channels.get(email)
+            if channel is None:
+                user = self.client.users_lookupByEmail(email=email)["user"]["id"]
+                channel = self._channels[email] = self.client.conversations_open(users=user)["channel"]["id"]
             self.client.chat_postMessage(channel=channel, text=text, blocks=body)
             return True
         except Exception as exc:  # noqa: BLE001

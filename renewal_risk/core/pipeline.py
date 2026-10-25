@@ -54,6 +54,8 @@ class RunResult:
     cost_usd: float
     llm_calls: int
     duration_s: float
+    explanations: dict = field(default_factory=dict)  # signal name -> how it is calculated, as of this run
+    assessment_id: int | None = None
     created_at: float = field(default_factory=time.time)
 
     def to_dict(self) -> dict:
@@ -319,18 +321,26 @@ class Engine:
                 fabricated.extend(r for r in action["evidence_refs"] if r not in known)
                 action["evidence_refs"] = [r for r in action["evidence_refs"] if r in known]
             assessment["recommended_actions"] = [a for a in assessment["recommended_actions"] if a["evidence_refs"]]
+            play_ids = {p.get("id") for p in (self.settings.playbooks or {}).get("plays") or []}
+            for action in assessment["recommended_actions"]:
+                if action.get("playbook_id") not in play_ids:
+                    action["playbook_id"] = ""  # the model named a play that does not exist
             assessment["account_id"] = account_id
             assessment["band"] = band_for(assessment["score"])
         self._log(account_id, as_of, "synthesis", assessment)
 
+        by_name = {s["name"]: s for s in self.settings.signals}
+        fired = {s["name"] for p in packets for s in p["signals"]} & set(by_name)
+        explanations = {n: " ".join(filter(None, [signals.explain(by_name[n]), by_name[n].get("how_calculated_note")])) for n in fired}
         result = RunResult(
             account_id=account_id, account_name=account_name, as_of=as_of, assessment=assessment, packets=packets,
             candidates=candidates, coordinator=coordinator, leakage_violations=leakage, fabricated_refs=sorted(set(fabricated)),
             source_gaps=source_gaps, record_counts={e: len(r) for e, r in records.items()},
             cost_usd=round(usage.cost_usd, 4), llm_calls=usage.calls, duration_s=round(time.time() - started, 1),
+            explanations=explanations,
         )
         if self.store is not None:
-            self.store.save_assessment(result)
+            result.assessment_id = self.store.save_assessment(result)
         return result
 
     def close(self) -> None:

@@ -220,4 +220,75 @@ def test_it_services_assessment(services_ctx):
     assert any(p["specialist"] == "delivery" for p in result.packets)
     contoso = services_ctx.engine.prescreen("C002")
     assert "billable_hours_drop" in {s["name"] for s in contoso["signals"]}
-    assert settings.playbooks["owner_roles"][0] == "Project director"
+    assert settings.playbooks["owner_roles"][0] == {"name": "Project director", "find": {"access_role": "director"}}
+
+
+URGENT = {"name": "urgent_ticket_pileup", "description": "Several urgent tickets open at once.", "specialist": "relationship",
+          "rule": "count", "entity": "ticket", "where": {"is_open": True}, "thresholds": {"medium": 2, "high": 3},
+          "how_calculated_note": "Agreed with the support team in Q3."}
+
+
+def test_custom_signals_preview_test_save_and_survive_threshold_saves(admin, demo_config):
+    builder = admin.get("/admin/api/signals/builder").json()
+    assert "count" in builder["rules"] and "ticket" in builder["entities"] and "relationship" in builder["specialists"]
+
+    preview = admin.post("/admin/api/signals/preview", json={"signal": URGENT}).json()
+    assert preview == {"explanation": "Counts tickets that are open. Medium at 2 or more, high at 3 or more.", "errors": []}
+    clash = admin.post("/admin/api/signals/preview", json={"signal": {**URGENT, "name": "open_ticket_backlog"}}).json()
+    assert any("built-in" in e for e in clash["errors"])
+    assert admin.post("/admin/api/signals/custom", json={"signal": {**URGENT, "where": {"colour": "red"}}}).status_code == 400
+
+    tested = admin.post("/admin/api/signals/test", json={"signal": URGENT}).json()
+    by_id = {r["account_id"]: r for r in tested["results"]}
+    assert tested["tested"] >= 1 and by_id["A001"]["fired"] and by_id["A001"]["severity"] == "high"
+
+    assert admin.post("/admin/api/signals/custom", json={"signal": URGENT}).json()["ok"]
+    rows = {s["name"]: s for s in admin.get("/admin/api/signals").json()["signals"]}
+    custom = rows["urgent_ticket_pileup"]
+    assert custom["origin"] == "custom" and custom["spec"]["author"] == "admin@demo.example"
+    assert custom["how_calculated_note"] == URGENT["how_calculated_note"] and custom["explanation"].startswith("Counts tickets")
+    assert rows["open_ticket_backlog"]["origin"] == "built-in"
+
+    # Regression: saving thresholds must keep custom signals (it used to drop them).
+    edits = [{**s, "thresholds": {"medium": 3, "high": 5}} if s["name"] == "urgent_ticket_pileup" else s for s in rows.values()]
+    assert admin.put("/admin/api/signals", json={"signals": edits}).json()["ok"]
+    saved = {s["name"]: s for s in yaml.safe_load((demo_config / "signals.yaml").read_text(encoding="utf-8"))["signals"]}
+    assert saved["urgent_ticket_pileup"]["custom"] and saved["urgent_ticket_pileup"]["thresholds"] == {"medium": 3, "high": 5}
+
+    from renewal_risk.service.context import get_context
+    assert "urgent_ticket_pileup" in {s["name"] for s in get_context().settings.signals}  # live after reload
+
+    # Rename keeps authorship; delete removes it.
+    assert admin.post("/admin/api/signals/custom", json={"signal": {**URGENT, "name": "urgent_pileup"}, "original_name": "urgent_ticket_pileup"}).json()["ok"]
+    names = {s["name"] for s in admin.get("/admin/api/signals").json()["signals"]}
+    assert "urgent_pileup" in names and "urgent_ticket_pileup" not in names
+    assert admin.delete("/admin/api/signals/custom/urgent_pileup").json()["ok"]
+    assert admin.delete("/admin/api/signals/custom/open_ticket_backlog").status_code == 404
+
+
+def test_ai_drafts_a_signal_for_review(admin):
+    draft = admin.post("/admin/api/signals/draft", json={"text": "flag accounts with 3 or more open urgent tickets"}).json()
+    assert draft["signal"]["name"] == "urgent_ticket_pileup" and draft["signal"]["rule"] == "count"
+    assert draft["errors"] == [] and "tickets that are open" in draft["explanation"]
+    assert admin.post("/admin/api/signals/draft", json={"text": "hi"}).status_code == 400
+    assert "urgent_ticket_pileup" not in {s["name"] for s in admin.get("/admin/api/signals").json()["signals"]}  # never auto-saved
+
+
+def test_playbook_owner_roles_and_action_settings(admin, demo_config):
+    assert admin.post("/admin/api/signals/custom", json={"signal": URGENT}).json()["ok"]
+    book = admin.get("/admin/api/playbooks").json()
+    assert "urgent_ticket_pileup" in book["signals"]
+    play = {"name": "Ticket swarm", "signals": ["urgent_ticket_pileup"], "action": "Swarm the open tickets", "steps": ["Assign owners"],
+            "owner_role": "Finance team", "min_severity": "high", "link": "https://wiki.example/swarm"}
+    roles = book["owner_roles"] + [{"name": "Finance team", "find": {"emails": ["admin@demo.example"]}}]
+    assert admin.put("/admin/api/playbooks", json={"owner_roles": roles, "plays": book["plays"] + [play]}).json()["ok"]
+    saved = yaml.safe_load((demo_config / "playbooks.yaml").read_text(encoding="utf-8"))
+    assert saved["plays"][-1]["id"] == "ticket_swarm" and saved["owner_roles"][-1]["find"] == {"emails": ["admin@demo.example"]}
+    assert admin.put("/admin/api/playbooks", json={"plays": [{**play, "signals": ["nope"]}]}).status_code == 400
+    assert admin.put("/admin/api/playbooks", json={"plays": [{**play, "link": "ftp://x"}]}).status_code == 400
+
+    assert admin.get("/admin/api/slack").json()["actions"] == {"dm_owners": True, "min_band": "high", "snooze_days": 7, "cooldown_days": 30}
+    assert admin.put("/admin/api/slack/actions", json={"dm_owners": False, "min_band": "low", "snooze_days": 500}).json()["ok"]
+    assert admin.get("/admin/api/slack").json()["actions"] == {"dm_owners": False, "min_band": "high", "snooze_days": 90, "cooldown_days": 30}
+    assert admin.get("/admin/api/actions").json() == {"actions": [], "summary": {"total": 0, "open": 0, "done": 0, "snoozed": 0, "not_relevant": 0, "overdue": 0, "completion_rate": None}}
+    assert admin.get("/admin/api/health").json()["actions"]["total"] == 0

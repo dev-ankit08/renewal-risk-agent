@@ -39,7 +39,12 @@ signals: [amount_decrease, opp_stalled, contract_downgrade, cancellation_schedul
 # Specialists come from renewal_risk/defaults/agent.yaml (commercial, relationship, financial, usage).
 
 playbooks:
-  owner_roles: [Account owner, Customer success manager, Support lead, Finance, Executive sponsor]
+  owner_roles:   # `find` = who gets the Slack DM for an account (set the others on the Playbook screen)
+    - {name: Account owner, find: {account_field: owner_email}}
+    - {name: Customer success manager, find: {account_field: owner_email}}
+    - Support lead
+    - Finance
+    - Executive sponsor
   plays:
     - {signals: [champion_departed], action: "Identify and meet the new decision-maker; re-run the value review with them", owner_role: Account owner, due_in_days: 14}
     - {signals: [support_escalation, high_priority_tickets], action: "Support lead owns the escalated tickets and sends the customer a written recovery plan", owner_role: Support lead, due_in_days: 7}

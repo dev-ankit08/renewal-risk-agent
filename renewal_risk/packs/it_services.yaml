@@ -64,7 +64,12 @@ specialists:
       client questioning value.
 
 playbooks:
-  owner_roles: [Project director, Delivery manager, Account manager, Practice head, Finance]
+  owner_roles:   # `find` = who gets the Slack DM for a client (set the others on the Playbook screen)
+    - {name: Project director, find: {access_role: director}}
+    - {name: Account manager, find: {account_field: owner_email}}
+    - Delivery manager
+    - Practice head
+    - Finance
   plays:
     - {signals: [project_red, budget_overrun, schedule_slip], action: "Delivery manager runs a project recovery review and shares a recovery plan with the client sponsor", owner_role: Delivery manager, due_in_days: 7}
     - {signals: [missed_milestones], action: "Re-baseline the milestone plan with the client and confirm acceptance criteria", owner_role: Delivery manager, due_in_days: 10}

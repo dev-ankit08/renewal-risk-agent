@@ -19,7 +19,8 @@ def render_brief(result: dict) -> str:
               f"({', '.join(f'`{r}`' for r in a['evidence_refs'])})" for a in v["recommended_actions"]] or ["- none"]
     lines += ["", "## Drivers"] + ([f"- {d}" for d in v["drivers"]] or ["- none"])
     lines += ["", "## Evidence"]
-    lines += [f"- **{s['name']}** ({s['severity']}, {s['specialist']}): {s['value']} — `{s['evidence_ref']}`" for s in v["signals"]] or ["- no signals"]
+    lines += [f"- **{s['name']}** ({s['severity']}, {s['specialist']}): {s['value']} — `{s['evidence_ref']}`"
+              + (f"\n  - _How it's calculated:_ {s['how_calculated']}" if s.get("how_calculated") else "") for s in v["signals"]] or ["- no signals"]
     if v["gaps"]:
         lines += ["", "## Not assessed / data gaps"] + [f"- {g}" for g in v["gaps"]]
     if v["leakage_violations"]:

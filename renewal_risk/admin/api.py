@@ -10,10 +10,13 @@ from __future__ import annotations
 
 import csv
 import io
+import json
 import os
 import re
 import secrets as pysecrets
 import time
+from concurrent.futures import ThreadPoolExecutor
+from datetime import date, timedelta
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
@@ -24,9 +27,12 @@ from .. import __version__
 from ..auth import oauth
 from ..auth.secrets import default_store
 from ..core import model
+from ..core import playbooks as playbooks_mod
+from ..core import prompts
+from ..core import signals as signals_mod
 from ..core.connector import ConnectorError
 from ..core.llm import LLMError
-from ..core.settings import all_signals, load_packs, load_presets
+from ..core.settings import all_signals, load_packs, load_presets, signal_catalog
 from ..core.validate import validate_settings
 from ..service.context import get_context, reload_context
 from . import auth, packs
@@ -145,17 +151,18 @@ def first_run(body: SetupBody) -> JSONResponse:
         raise HTTPException(403, "wrong setup token — it is printed in the server console")
     if body.pack not in load_packs():
         raise HTTPException(400, f"unknown business type '{body.pack}'")
+    email = body.email.strip().lower()
     try:
-        ctx.store.create_admin(body.email, body.password)
+        ctx.store.create_admin(email, body.password)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     store = config_store(ctx)
     agent_cfg = store.read("agent.yaml")
     agent_cfg["pack"] = body.pack
-    store.write("agent.yaml", agent_cfg, body.email)
+    store.write("agent.yaml", agent_cfg, email)
     auth.setup_token(secret_store_for(ctx), ctx.store)  # clears the token
     reload_context()
-    return _login_response(body.email)
+    return _login_response(email)
 
 
 class LoginBody(BaseModel):
@@ -592,21 +599,59 @@ def set_link_rules(source: str, body: RulesBody, admin: str = Depends(auth.curre
 # signals, playbooks
 # ---------------------------------------------------------------------------
 
+_SLUG = re.compile(r"^[a-z][a-z0-9_]{2,48}$")
+_SIGNAL_META = ("name", "description", "specialist", "rule", "enabled", "custom", "how_calculated_note",
+                "author", "created_at", "updated_at", "value_template", "origin")
+
+
+def _catalog(ctx) -> list[dict]:
+    return signal_catalog(ctx.settings.dir, ctx.settings.pack)
+
+
+def _signal_row(sig: dict, provided: set[str]) -> dict:
+    needed = sorted(signals_mod.required_entities(sig))
+    row = {"name": sig["name"], "description": sig.get("description", ""), "specialist": sig.get("specialist"),
+           "origin": sig.get("origin", "built-in"), "enabled": sig.get("enabled", True), "rule": sig.get("rule"),
+           "thresholds": sig.get("thresholds", {}), "direction": sig.get("direction", "above"), "entities": needed,
+           "has_data": bool(set(needed) & provided), "explanation": signals_mod.explain(sig),
+           "how_calculated_note": sig.get("how_calculated_note", "")}
+    if row["origin"] == "custom":
+        row["spec"] = {k: v for k, v in sig.items() if k != "origin"}
+    return row
+
+
+def _signal_problems(sig: dict, ctx, editing: str | None = None) -> list[str]:
+    """The one validation path for preview, test, draft and save."""
+    problems = []
+    name = sig.get("name", "")
+    if not _SLUG.match(name or ""):
+        problems.append("name: 3-49 lowercase letters, digits or _, starting with a letter (e.g. p1_ticket_spike)")
+    builtin = {s["name"] for s in _catalog(ctx) if s.get("origin") == "built-in"}
+    if name in builtin and name != editing:
+        problems.append(f"name: '{name}' is a built-in signal — pick another name")
+    if sig.get("specialist") not in (ctx.settings.agent.get("specialists") or {}):
+        problems.append(f"specialist: choose one of {', '.join(ctx.settings.agent.get('specialists') or {})}")
+    return problems + signals_mod.validate([sig])
+
+
+def _write_signal_overrides(ctx, admin: str, mutate) -> dict:
+    """Read signals.yaml, let `mutate(entries_by_name)` change it, write it back."""
+    store = config_store(ctx)
+
+    def change():
+        doc = store.read("signals.yaml")
+        entries = {e["name"]: e for e in doc.get("signals") or [] if e.get("name")}
+        mutate(entries)
+        doc["signals"] = list(entries.values())
+        store.write("signals.yaml", doc, admin)
+    return _apply(change)
+
+
 @router.get("/signals")
 def get_signals(admin: str = Depends(auth.current_admin)) -> dict:
-    from ..core import signals as signals_mod
-
     ctx = get_context()
-    active = {s["name"]: s for s in ctx.settings.signals}
     provided = ctx.engine.available_entities()
-    out = []
-    for sig in all_signals(ctx.settings.pack):
-        current = active.get(sig["name"], sig)
-        needed = sorted(signals_mod.required_entities(sig))
-        out.append({"name": sig["name"], "description": sig.get("description", ""), "specialist": sig.get("specialist"),
-                    "enabled": sig["name"] in active, "thresholds": current.get("thresholds", {}), "direction": current.get("direction", "above"),
-                    "entities": needed, "has_data": bool(set(needed) & provided)})
-    return {"signals": out, "pack": ctx.settings.pack.get("name")}
+    return {"signals": [_signal_row(s, provided) for s in _catalog(ctx)], "pack": ctx.settings.pack.get("name")}
 
 
 class SignalsBody(BaseModel):
@@ -615,38 +660,162 @@ class SignalsBody(BaseModel):
 
 @router.put("/signals")
 def save_signals(body: SignalsBody, admin: str = Depends(auth.current_admin)) -> dict:
+    """On/off and thresholds for every signal. Custom signals keep their full
+    definition (the first version rewrote this file from built-ins only and
+    silently dropped them)."""
     ctx = get_context()
     defaults = {s["name"]: s for s in all_signals(ctx.settings.pack)}
-    store = config_store(ctx)
 
-    def change():
-        overrides = []
+    def mutate(entries: dict) -> None:
         for item in body.signals:
-            base = defaults.get(item.get("name"))
+            name = item.get("name")
+            thresholds = {k: v for k, v in (item.get("thresholds") or {}).items() if k in signals_mod.SEVERITIES and v not in (None, "")}
+            if name in entries and entries[name].get("custom"):
+                entries[name].update(enabled=bool(item.get("enabled", True)), thresholds=thresholds or entries[name].get("thresholds", {}))
+                continue
+            base = defaults.get(name)
             if base is None:
                 continue
-            entry = {"name": item["name"]}
+            entry = {"name": name}
             if bool(item.get("enabled", True)) != base.get("enabled", True):
                 entry["enabled"] = bool(item.get("enabled", True))
-            thresholds = {k: v for k, v in (item.get("thresholds") or {}).items() if k in ("low", "medium", "high") and v not in (None, "")}
             if thresholds and thresholds != base.get("thresholds"):
                 entry["thresholds"] = thresholds
             if len(entry) > 1:
-                overrides.append(entry)
-        store.write("signals.yaml", {"signals": overrides}, admin)
-    return _apply(change)
+                entries[name] = entry
+            else:
+                entries.pop(name, None)
+    return _write_signal_overrides(ctx, admin, mutate)
+
+
+@router.get("/signals/builder")
+def signal_builder(admin: str = Depends(auth.current_admin)) -> dict:
+    ctx = get_context()
+    available = ctx.engine.available_entities()
+    return {**signals_mod.builder_metadata(),
+            "entities": {e: model.field_docs(e) for e in sorted(available)},
+            "specialists": list(ctx.settings.agent.get("specialists") or {})}
+
+
+class SignalBody(BaseModel):
+    signal: dict
+    original_name: str | None = None
+    window_days: int = 120
+
+
+@router.post("/signals/preview")
+def preview_signal(body: SignalBody, admin: str = Depends(auth.current_admin)) -> dict:
+    ctx = get_context()
+    return {"explanation": signals_mod.explain(body.signal), "errors": _signal_problems(body.signal, ctx, body.original_name)}
+
+
+@router.post("/signals/custom")
+def save_custom_signal(body: SignalBody, admin: str = Depends(auth.current_admin)) -> dict:
+    ctx = get_context()
+    errors = _signal_problems(body.signal, ctx, body.original_name)
+    if errors:
+        raise HTTPException(400, "; ".join(errors))
+    now = time.strftime("%Y-%m-%dT%H:%M:%S")
+    sig = {k: v for k, v in body.signal.items() if k != "origin"}
+
+    def mutate(entries: dict) -> None:
+        previous = entries.pop(body.original_name or sig["name"], {})
+        entries[sig["name"]] = {**sig, "custom": True, "author": previous.get("author", admin),
+                                "created_at": previous.get("created_at", now), "updated_at": now}
+    return _write_signal_overrides(ctx, admin, mutate)
+
+
+@router.delete("/signals/custom/{name}")
+def delete_custom_signal(name: str, admin: str = Depends(auth.current_admin)) -> dict:
+    ctx = get_context()
+
+    def mutate(entries: dict) -> None:
+        if not (entries.get(name) or {}).get("custom"):
+            raise HTTPException(404, f"no custom signal named '{name}'")
+        entries.pop(name)
+    return _write_signal_overrides(ctx, admin, mutate)
+
+
+@router.post("/signals/test")
+def test_signal(body: SignalBody, admin: str = Depends(auth.current_admin)) -> dict:
+    """Run a draft signal on up to 20 accounts renewing soon — real data, no AI."""
+    ctx = get_context()
+    sig = {**body.signal, "name": body.signal.get("name") or "draft"}
+    errors = signals_mod.validate([sig])
+    if errors:
+        raise HTTPException(400, "; ".join(errors))
+    engine, today = ctx.engine, date.today()
+    try:
+        accounts = engine.list_renewals((today + timedelta(days=body.window_days)).isoformat(), today.isoformat())
+    except ConnectorError:
+        accounts = [{"account_id": a["id"], "name": a.get("name")} for a in engine.primary().list("account")]
+    accounts = accounts[:20]
+    needed, available = signals_mod.required_entities(sig), engine.available_entities()
+
+    def run(acct: dict) -> dict:
+        records, gaps, _ = engine.gather(acct["account_id"], today.isoformat(), entities=needed)
+        found = next(iter(signals_mod.evaluate([sig], records, today.isoformat(), available).values()))
+        hit = found["signals"][0] if found["signals"] else None
+        return {"account_id": acct["account_id"], "name": acct.get("name"), "fired": bool(hit),
+                "severity": hit["severity"] if hit else None, "value": hit["value"] if hit else "",
+                "evidence_ref": hit["evidence_ref"] if hit else None, "gaps": found["gaps"] + gaps}
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        results = list(pool.map(run, accounts))
+    return {"results": results, "fired": sum(r["fired"] for r in results), "tested": len(results),
+            "explanation": signals_mod.explain(sig)}
+
+
+class DraftBody(BaseModel):
+    text: str
+
+
+@router.post("/signals/draft")
+def draft_signal(body: DraftBody, admin: str = Depends(auth.current_admin)) -> dict:
+    """Plain English -> a signal definition the admin reviews, tests and saves."""
+    ctx = get_context()
+    text = body.text.strip()
+    if not 5 <= len(text) <= 1000:
+        raise HTTPException(400, "describe the warning sign in 5 to 1000 characters")
+    builder = signal_builder(admin)
+    entities = {e: {f: d["description"] for f, d in fields.items()} for e, fields in builder["entities"].items()}
+    examples = [{k: v for k, v in s.items() if k != "origin"} for s in _catalog(ctx) if s["name"] in ("open_ticket_backlog", "no_recent_activity", "project_red")]
+    system, user = prompts.signal_draft_prompt(text, builder, entities, builder["specialists"], examples)
+    try:
+        data = ctx.engine.llm.structured("utility", system, user, prompts.SIGNAL_DRAFT_SCHEMA)
+    except LLMError as exc:
+        raise HTTPException(503, f"AI drafting is unavailable ({exc}); build the signal in the form instead") from exc
+    try:
+        spec = json.loads(data["spec_json"]) if data["spec_json"].strip() else {}
+    except ValueError:
+        spec = {}
+    spec = {k: v for k, v in spec.items() if k not in _SIGNAL_META}
+    sig = {"name": re.sub(r"[^a-z0-9_]", "_", data["name"].lower()).strip("_")[:48], "description": data["description"],
+           "specialist": data["specialist"], "rule": data["rule"], **spec}
+    return {"signal": sig, "reason": data["reason"], "explanation": signals_mod.explain(sig), "errors": _signal_problems(sig, ctx)}
 
 
 @router.get("/playbooks")
 def get_playbooks(admin: str = Depends(auth.current_admin)) -> dict:
-    return get_context().settings.playbooks or {"owner_roles": [], "plays": []}
+    ctx = get_context()
+    return {**ctx.settings.playbooks, "signals": [s["name"] for s in _catalog(ctx)]}
 
 
 @router.put("/playbooks")
 def save_playbooks(body: dict, admin: str = Depends(auth.current_admin)) -> dict:
-    plays = [p for p in body.get("plays") or [] if p.get("action") and p.get("signals")]
-    store = config_store(get_context())
-    return _apply(lambda: store.write("playbooks.yaml", {"owner_roles": body.get("owner_roles") or [], "plays": plays}, admin))
+    ctx = get_context()
+    try:
+        clean = playbooks_mod.normalize(body, {s["name"] for s in _catalog(ctx)}, strict=True)
+    except playbooks_mod.PlaybookError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    store = config_store(ctx)
+    return _apply(lambda: store.write("playbooks.yaml", clean, admin))
+
+
+@router.get("/actions")
+def list_actions(status: str | None = None, admin: str = Depends(auth.current_admin)) -> dict:
+    ctx = get_context()
+    return {"actions": ctx.store.action_items(status=status), "summary": ctx.store.action_summary(30)}
 
 
 # ---------------------------------------------------------------------------
@@ -732,6 +901,7 @@ def get_slack(admin: str = Depends(auth.current_admin)) -> dict:
     sstore = secret_store_for(ctx)
     return {"mode": raw.get("mode", "socket"), "command": raw.get("command", "/renewal-risk"),
             "reply_visibility": raw.get("reply_visibility", "ephemeral"), "alerts": raw.get("alerts") or {},
+            "actions": {"dm_owners": True, "min_band": "high", "snooze_days": 7, "cooldown_days": 30, **(raw.get("actions") or {})},
             "bot_token_set": bool(ctx.settings.slack.get("bot_token")), "app_token_set": bool(ctx.settings.slack.get("app_token")),
             "stored_in_ui": bool(sstore.get("slack/bot_token"))}
 
@@ -763,6 +933,28 @@ def save_slack(body: SlackBody, admin: str = Depends(auth.current_admin)) -> dic
     result = _apply(change)
     result["note"] = "Restart `renewal-risk serve` for the Slack connection to pick up new tokens."
     return result
+
+
+class ActionsBody(BaseModel):
+    dm_owners: bool = True
+    min_band: str = "high"
+    snooze_days: int = 7
+    cooldown_days: int = 30
+
+
+@router.put("/slack/actions")
+def save_action_settings(body: ActionsBody, admin: str = Depends(auth.current_admin)) -> dict:
+    """Action DM settings (Signals & playbooks > Owners & notifications)."""
+    ctx = get_context()
+    store = config_store(ctx)
+    clean = {"dm_owners": body.dm_owners, "min_band": body.min_band if body.min_band in ("medium", "high") else "high",
+             "snooze_days": max(1, min(body.snooze_days, 90)), "cooldown_days": max(1, min(body.cooldown_days, 365))}
+
+    def change():
+        doc = store.read("slack.yaml")
+        doc["actions"] = clean
+        store.write("slack.yaml", doc, admin)
+    return _apply(change)
 
 
 class SlackTestBody(BaseModel):
@@ -801,6 +993,7 @@ def health(admin: str = Depends(auth.current_admin)) -> dict:
         "sources": {n: {"last_test": _last_tests.get(n), **_connection_state(ctx, n, s)} for n, s in ctx.settings.sources.items()},
         "linking": _report_json(report) if report else None,
         "daily": ctx.store.assessment_stats(30), "recent": ctx.store.recent_assessments(20),
+        "actions": ctx.store.action_summary(30),
         "model_configured": bool(os.environ.get("ANTHROPIC_API_KEY")),
     }
 

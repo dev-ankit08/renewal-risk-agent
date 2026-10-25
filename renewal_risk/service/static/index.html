@@ -8,6 +8,7 @@
   :root { --fg:#1a1a1a; --muted:#666; --line:#ddd; --bg:#fff; --soft:#f8fafc; --accent:#2563eb; }
   @media (prefers-color-scheme: dark) { :root { --fg:#e5e7eb; --muted:#9ca3af; --line:#374151; --bg:#111827; --soft:#1f2937; --accent:#60a5fa; } }
   body { font-family: -apple-system, Segoe UI, Arial, sans-serif; max-width: 820px; margin: 32px auto; padding: 0 16px; color: var(--fg); background: var(--bg); }
+  .muted { color: var(--muted); font-size: .85em; margin-top: 4px; }
   h1 { font-size: 1.4rem; margin-bottom: 4px; }
   .sub { color: var(--muted); margin: 0 0 20px; }
   input { width: 100%; font-size: 1rem; padding: 10px 12px; box-sizing: border-box; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--fg); }
@@ -72,7 +73,7 @@ function render(d) {
 
 function renderOne(r) {
   const actions = (r.recommended_actions || []).map(a => `<li><strong>${esc(a.action)}</strong> — ${esc(a.owner_role)}, ${esc(a.priority)} priority, within ${a.due_in_days} days</li>`).join('');
-  const signals = (r.signals || []).map(s => `<tr><td>${badge(s.severity)}</td><td>${esc(s.name)}</td><td>${esc(s.value)}<br><code>${esc(s.evidence_ref)}</code></td></tr>`).join('');
+  const signals = (r.signals || []).map(s => `<tr><td>${badge(s.severity)}</td><td>${esc(s.name)}</td><td>${esc(s.value)}<br><code>${esc(s.evidence_ref)}</code>${s.how_calculated ? `<div class="muted"><em>How it's calculated:</em> ${esc(s.how_calculated)}</div>` : ''}</td></tr>`).join('');
   $('results').innerHTML = `<div class="card">
     <h2>${esc(r.account_name)} ${badge(r.band, r.score)}</h2>
     ${r.abstained ? '<p><em>Low confidence — not enough data for a firm score.</em></p>' : ''}

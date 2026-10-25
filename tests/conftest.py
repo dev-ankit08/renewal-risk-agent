@@ -9,6 +9,7 @@ from datetime import date
 from pathlib import Path
 
 import pytest
+import yaml
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -25,6 +26,12 @@ class FakeLLM:
     def __init__(self, fabricate: bool = True):
         self.calls: list[str] = []
         self.fabricate = fabricate
+
+    @staticmethod
+    def _play_for(system: str, signal: str) -> str:
+        """The playbook id the synthesis prompt lists for this signal, if any."""
+        m = re.search(rf"- id (\w+): when [^\n]*\b{re.escape(signal)}\b", system)
+        return m.group(1) if m else ""
 
     @staticmethod
     def _block(text: str, tag: str):
@@ -60,9 +67,15 @@ class FakeLLM:
                 "rationale": f"{len(sigs)} signals.",
                 "recommended_actions": [
                     {"action": f"Address {s['name']}", "owner_role": "Account owner", "priority": "high", "due_in_days": 7,
-                     "evidence_refs": [s["evidence_ref"]]} for s in sigs if s["severity"] == "high"
+                     "evidence_refs": [s["evidence_ref"]], "why": f"{s['name']} is high", "playbook_id": self._play_for(system, s["name"])}
+                    for s in sigs if s["severity"] == "high"
                 ][:4],
             }
+        elif "spec_json" in json.dumps(schema):
+            # Signal drafting: a fixed, valid answer to "3+ open urgent tickets".
+            spec = {"entity": "ticket", "where": {"is_open": True, "priority": ["urgent", "high"]}, "thresholds": {"medium": 2, "high": 3}}
+            data = {"name": "Urgent Ticket Pileup", "description": "Several urgent tickets open at once.", "specialist": "relationship",
+                    "rule": "count", "spec_json": json.dumps(spec), "reason": "count of open urgent tickets"}
         elif "value_map" in json.dumps(schema):
             # Mapping agent: take the best deterministic candidate, and show a value map for priority.
             cands = json.loads(user.split("(name/label/type similarity):\n", 1)[1].split("\n\n<source_fields>", 1)[0])
@@ -84,7 +97,14 @@ def demo_config(tmp_path, monkeypatch):
     import generate
 
     demo = tmp_path / "demo"
-    shutil.copytree(ROOT / "examples" / "csv-demo" / "config", demo / "config")
+    # Hermetic copy: skip what the admin UI writes while someone tries the demo by hand
+    # (approved links, Slack settings, uploads, overrides) and force the demo's own pack.
+    shutil.copytree(ROOT / "examples" / "csv-demo" / "config", demo / "config",
+                    ignore=shutil.ignore_patterns("links.csv", "slack.yaml", "signals.yaml", "uploads", "mappings", "*.tmp"))
+    agent_yaml = demo / "config" / "agent.yaml"
+    agent = yaml.safe_load(agent_yaml.read_text(encoding="utf-8")) or {}
+    agent["pack"] = "saas"
+    agent_yaml.write_text(yaml.safe_dump(agent), encoding="utf-8")
     generate.build(demo / "data", TODAY)
     monkeypatch.setenv("RENEWAL_RISK_STATE_DIR", str(tmp_path / "state"))
     monkeypatch.delenv("RENEWAL_AGENT_ZDR_CONFIRMED", raising=False)

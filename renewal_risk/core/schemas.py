@@ -47,8 +47,10 @@ ACTION_SCHEMA = {
         "priority": {"type": "string", "enum": ["low", "medium", "high"]},
         "due_in_days": {"type": "integer"},
         "evidence_refs": {"type": "array", "items": {"type": "string"}},
+        "playbook_id": {"type": "string"},
+        "why": {"type": "string"},
     },
-    "required": ["action", "owner_role", "priority", "due_in_days", "evidence_refs"],
+    "required": ["action", "owner_role", "priority", "due_in_days", "evidence_refs", "playbook_id", "why"],
     "additionalProperties": False,
 }
 

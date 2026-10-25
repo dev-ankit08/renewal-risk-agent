@@ -29,13 +29,14 @@ Aggregates: sum | count | latest:<field> (value of that record's `field`) | avg
 from __future__ import annotations
 
 import string
+from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 
 from . import model
 from .mapping import _loose_eq, to_num
 
 SEVERITIES = ("low", "medium", "high")
-RULE_TYPES = ("count", "ratio_vs_baseline", "days_since", "pct_change", "window_change", "ratio", "exists", "date_diff", "absent")
 
 
 # ---------------------------------------------------------------------------
@@ -341,12 +342,194 @@ def _rule_exists(sig, records, as_of):
             return case.get("severity", "medium"), len(rows), text, row, None
     return None, 0, "", None, None
 
+# ---------------------------------------------------------------------------
+# The rule table: one entry per rule type drives evaluation, the plain-English
+# explanation, validation and the admin UI's signal builder.
+# ---------------------------------------------------------------------------
 
-_RULES = {
-    "count": _rule_count, "ratio_vs_baseline": _rule_ratio_vs_baseline, "days_since": _rule_days_since,
-    "pct_change": _rule_pct_change, "window_change": _rule_window_change, "ratio": _rule_ratio, "exists": _rule_exists,
-    "date_diff": _rule_date_diff, "absent": _rule_absent,
+OPERATORS = {  # where-clause operators, as the builder offers them
+    "eq": "is", "ne": "is not", "in": "is one of", "not_in": "is not one of",
+    "lt": "is less than", "lte": "is at most", "gt": "is more than", "gte": "is at least",
+    "null": "is empty", "within_days": "is within the last N days",
+    "within_next_days": "is within the next N days", "before_as_of": "is before the assessment date",
 }
+
+
+def _plural(entity) -> str:
+    if isinstance(entity, list):
+        return " or ".join(_plural(e) for e in entity)
+    word = str(entity or "record").replace("_", " ")
+    return word[:-1] + "ies" if word.endswith("y") else word + "s"
+
+
+def _fname(field) -> str:
+    return {"arr": "ARR", "rag": "RAG status"}.get(str(field), str(field or "value").replace("_", " "))
+
+
+def _agg_name(agg) -> str:
+    agg = str(agg or "sum")
+    return {"sum": "total", "avg": "average", "count": "count"}.get(agg, agg.split(":", 1)[0])
+
+
+def _value_text(value) -> str:
+    if value == "$as_of":
+        return "the assessment date"
+    if isinstance(value, bool):
+        return "yes" if value else "no"
+    if isinstance(value, list):
+        items = [_value_text(v) for v in value]
+        return ", ".join(items[:-1]) + " or " + items[-1] if len(items) > 1 else "".join(items)
+    return str(value)
+
+
+_COMPARE = {"lt": "below", "lte": "at most", "gt": "above", "gte": "at least"}
+_DATE_COMPARE = {"lt": "before", "lte": "on or before", "gt": "after", "gte": "on or after"}
+
+
+def _cond_text(field: str, cond) -> str:
+    """One condition as a phrase that follows '<records> that ...'."""
+    name = _fname(field)
+    if field.startswith("is_"):  # yes/no fields read as adjectives: "are open"
+        adj = field[3:].replace("_", " ")
+        op, value = next(iter(cond.items())) if isinstance(cond, dict) and len(cond) == 1 else ("eq", cond)
+        if isinstance(value, bool) and op in ("eq", "ne"):
+            positive = value if op == "eq" else not value
+            return f"are {'' if positive else 'not '}{adj}" + (" (or not recorded)" if op == "ne" else "")
+    if isinstance(cond, list):
+        return f"have {name} {_value_text(cond)}"
+    if not isinstance(cond, dict):
+        return f"have {name} {_value_text(cond)}"
+    parts = []
+    for op, value in cond.items():
+        if op == "null":
+            parts.append(f"have {'no' if value else 'a'} {name}")
+        elif op in ("within_days", "within_next_days"):
+            parts.append(f"have {name} in the {'last' if op == 'within_days' else 'next'} {value} days")
+        elif op == "before_as_of":
+            parts.append(f"have {name} {'before' if value else 'on or after'} the assessment date")
+        elif op in _COMPARE:
+            words = _DATE_COMPARE if value == "$as_of" else _COMPARE
+            parts.append(f"have {name} {words[op]} {_value_text(value)}")
+        elif op in ("ne", "not_in"):
+            parts.append(f"do not have {name} {_value_text(value)}")
+        else:
+            parts.append(f"have {name} {_value_text(value)}")
+    return " and ".join(parts)
+
+
+def _records(spec: dict) -> str:
+    where = spec.get("where") or {}
+    text = _plural(spec.get("entity") or spec.get("entities"))
+    return text + (" that " + " and ".join(_cond_text(f, c) for f, c in where.items()) if where else "")
+
+
+def _levels(sig: dict, unit: str = "", default_direction: str = "above") -> str:
+    th = sig.get("thresholds") or {}
+    above = sig.get("direction", default_direction) not in ("below",)
+    parts = [f"{lvl} at {th[lvl]}{unit} or {'more' if above else 'less'}" for lvl in SEVERITIES if lvl in th]
+    return (" " + ", ".join(parts).capitalize() + ".") if parts else ""
+
+
+def _window_text(sig: dict) -> str:
+    return f" from the last {sig['window_days']} days (by {_fname(sig.get('date_field', 'created_at'))})" if sig.get("window_days") else ""
+
+
+def _explain_pct(sig: dict) -> str:
+    cur, base = sig.get("current", {}), sig.get("baseline", {})
+    direction = "drop" if sig.get("direction", "decrease") == "decrease" else "rise"
+    if base.get("same_record"):
+        head = f"For each of the {_records(cur)}, compares {_fname(cur.get('field'))} with {_fname(base.get('field'))}"
+        head += " and takes the worst one" if cur.get("per_record") else ""
+    else:
+        head = (f"Compares {_fname(cur.get('field'))} on {_records(cur)} with {_fname(base.get('field'))} "
+                f"on {_records(base)}")
+    return f"{head}, as a % {direction}.{_levels(sig, '%')}"
+
+
+# Input kinds the builder renders generically: entity, where, number, date_field,
+# field, agg, thresholds, severity, group (nested spec), cases (list of where + severity).
+_GROUP = ({"key": "entity", "kind": "entity"}, {"key": "where", "kind": "where", "optional": True})
+_GROUP_FIELD = _GROUP + ({"key": "field", "kind": "field"},)
+_THRESHOLDS = {"key": "thresholds", "kind": "thresholds"}
+
+
+@dataclass(frozen=True)
+class RuleType:
+    label: str
+    summary: str
+    inputs: tuple
+    evaluate: Callable
+    explain: Callable[[dict], str]
+
+
+RULES: dict[str, RuleType] = {
+    "count": RuleType(
+        "Count records", "How many matching records there are, e.g. open escalated tickets.",
+        _GROUP + ({"key": "window_days", "kind": "number", "optional": True}, {"key": "date_field", "kind": "date_field", "optional": True}, _THRESHOLDS),
+        _rule_count, lambda s: f"Counts {_records(s)}{_window_text(s)}.{_levels(s)}"),
+    "days_since": RuleType(
+        "Days since last event", "How long ago the latest matching event happened, e.g. last meeting.",
+        _GROUP + ({"key": "date_field", "kind": "date_field"}, _THRESHOLDS),
+        _rule_days_since, lambda s: f"Measures the days since the most recent {_fname(s.get('date_field'))} on {_records(s)}.{_levels(s, ' days')}"),
+    "window_change": RuleType(
+        "Change vs previous period", "A total or average in the last N days vs the N days before, e.g. usage drop.",
+        _GROUP_FIELD + ({"key": "agg", "kind": "agg"}, {"key": "date_field", "kind": "date_field"}, {"key": "window_days", "kind": "number"}, _THRESHOLDS),
+        _rule_window_change,
+        lambda s: (f"Compares the {_agg_name(s.get('agg'))} of {_fname(s.get('field'))} on {_records(s)} over the last {s.get('window_days', 30)} days "
+                   f"with the {s.get('window_days', 30)} days before, as a % {'drop' if s.get('direction', 'decrease') == 'decrease' else 'rise'}.{_levels(s, '%')}")),
+    "ratio_vs_baseline": RuleType(
+        "Spike vs the account's normal", "Records in the last N days vs the account's own average, e.g. a ticket spike.",
+        _GROUP + ({"key": "date_field", "kind": "date_field"}, {"key": "window_days", "kind": "number"}, {"key": "baseline_windows", "kind": "number"}, _THRESHOLDS),
+        _rule_ratio_vs_baseline,
+        lambda s: (f"Compares how many {_records(s)} appeared in the last {s.get('window_days', 90)} days with the average of the "
+                   f"{s.get('baseline_windows', 3)} earlier periods of the same length (needs at least {s.get('min_count', 2)} recent).{_levels(s, 'x the usual rate')}")),
+    "pct_change": RuleType(
+        "Percent difference", "One value compared with another, e.g. renewal amount vs current contract value.",
+        ({"key": "current", "kind": "group", "inputs": _GROUP_FIELD}, {"key": "baseline", "kind": "group", "inputs": _GROUP_FIELD}, _THRESHOLDS),
+        _rule_pct_change, _explain_pct),
+    "ratio": RuleType(
+        "Ratio of two totals", "One total divided by another, e.g. active users per licensed seat.",
+        ({"key": "numerator", "kind": "group", "inputs": _GROUP_FIELD + ({"key": "agg", "kind": "agg"},)},
+         {"key": "denominator", "kind": "group", "inputs": _GROUP_FIELD + ({"key": "agg", "kind": "agg"},)}, _THRESHOLDS),
+        _rule_ratio,
+        lambda s: (f"Divides the {_agg_name(s.get('numerator', {}).get('agg'))} of {_fname(s.get('numerator', {}).get('field'))} on {_records(s.get('numerator', {}))} "
+                   f"by the {_agg_name(s.get('denominator', {}).get('agg'))} of {_fname(s.get('denominator', {}).get('field'))} on {_records(s.get('denominator', {}))}."
+                   f"{_levels(s, '', 'below')}")),
+    "date_diff": RuleType(
+        "Days between two dates", "Gap between two dates on a record, e.g. forecast vs planned end.",
+        _GROUP + ({"key": "start_field", "kind": "date_field", "required": True}, {"key": "end_field", "kind": "date_field", "required": True}, _THRESHOLDS),
+        _rule_date_diff,
+        lambda s: f"For each of the {_records(s)}, counts the days from {_fname(s.get('start_field'))} to {_fname(s.get('end_field'))} and takes the largest.{_levels(s, ' days')}"),
+    "exists": RuleType(
+        "A situation is present", "Fires when a matching record exists, e.g. the primary contact has left.",
+        _GROUP + ({"key": "cases", "kind": "cases"},),
+        _rule_exists,
+        lambda s: "Flags " + "; otherwise ".join(
+            f"{c.get('severity', 'medium')} if any " + _records({"entity": s.get("entity") or s.get("entities"), "where": {**(s.get('where') or {}), **(c.get('where') or {})}})
+            for c in s.get("cases", [])) + "."),
+    "absent": RuleType(
+        "Something expected is missing", "Fires when a trigger record exists but no expected record does, e.g. contract ending with no renewal.",
+        ({"key": "trigger", "kind": "group", "inputs": _GROUP}, {"key": "expected", "kind": "group", "inputs": _GROUP}, {"key": "severity", "kind": "severity"}),
+        _rule_absent, lambda s: f"Flags {s.get('severity', 'medium')} risk when there are {_records(s.get('trigger', {}))} but no {_records(s.get('expected', {}))}."),
+}
+RULE_TYPES = tuple(RULES)
+
+
+def explain(sig: dict) -> str:
+    """Plain-English 'how it is calculated' for any signal (built-in or custom)."""
+    rule = RULES.get(sig.get("rule"))
+    if rule is None:
+        return "Unknown rule type."
+    try:
+        return rule.explain(sig).replace("  ", " ")
+    except Exception:  # noqa: BLE001 - an incomplete draft still gets a readable answer
+        return f"{rule.label}: {rule.summary}"
+
+
+def builder_metadata() -> dict:
+    """Everything the admin UI's signal builder needs, derived from the table above."""
+    return {"rules": {name: {"label": r.label, "summary": r.summary, "inputs": r.inputs} for name, r in RULES.items()},
+            "operators": OPERATORS, "severities": SEVERITIES}
 
 
 def required_entities(sig: dict) -> set[str]:
@@ -375,12 +558,12 @@ def evaluate(signals: list[dict], records: dict[str, list[dict]], as_of: str, av
         if missing and (needed - set(missing)) == set():
             bucket["gaps"].append(f"{sig['name']} not evaluated — no source provides {', '.join(missing)}")
             continue
-        rule = _RULES.get(sig.get("rule"))
+        rule = RULES.get(sig.get("rule"))
         if rule is None:
             bucket["gaps"].append(f"{sig['name']}: unknown rule type '{sig.get('rule')}'")
             continue
         try:
-            severity, metric, text, evidence, gap = rule(sig, records, as_of)
+            severity, metric, text, evidence, gap = rule.evaluate(sig, records, as_of)
         except Exception as exc:  # noqa: BLE001 - one misconfigured signal must not sink the run
             bucket["gaps"].append(f"{sig['name']} failed: {type(exc).__name__}: {exc}")
             continue
@@ -396,16 +579,57 @@ def evaluate(signals: list[dict], records: dict[str, list[dict]], as_of: str, av
     return out
 
 
+def _check_inputs(name: str, spec: dict, inputs: tuple, entity: str | None, problems: list[str]) -> None:
+    """Walk the rule's input table: required keys present, fields exist on their entity."""
+    entity = spec.get("entity") or entity
+    for inp in inputs:
+        key, kind, value = inp["key"], inp["kind"], spec.get(inp["key"])
+        if value in (None, "", [], {}):
+            if kind == "entity" and spec.get("same_record"):
+                continue  # compares two fields of the same record
+            if inp.get("required", kind in ("entity", "group", "cases", "field")):
+                problems.append(f"signal '{name}': '{key}' is required")
+            continue
+        if kind == "entity":
+            for e in (value if isinstance(value, list) else [value]):
+                if e not in model.ENTITIES:
+                    problems.append(f"signal '{name}': unknown entity '{e}'")
+        elif kind in ("field", "date_field") and entity in model.ENTITIES and model.field_type(entity, value) is None:
+            problems.append(f"signal '{name}': '{value}' is not a field of {entity}")
+        elif kind == "where":
+            _check_where(name, value, entity, problems)
+        elif kind == "group":
+            _check_inputs(name, value, inp["inputs"], None, problems)
+        elif kind == "cases":
+            for case in value:
+                _check_where(name, case.get("where") or {}, entity, problems)
+                if case.get("severity", "medium") not in SEVERITIES:
+                    problems.append(f"signal '{name}': case severity must be low, medium or high")
+
+
+def _check_where(name: str, where: dict, entity, problems: list[str]) -> None:
+    if not isinstance(where, dict):
+        problems.append(f"signal '{name}': conditions must be field: value pairs")
+        return
+    for fld, cond in where.items():
+        if isinstance(entity, str) and entity in model.ENTITIES and model.field_type(entity, fld) is None:
+            problems.append(f"signal '{name}': '{fld}' is not a field of {entity}")
+        if isinstance(cond, dict):
+            problems.extend(f"signal '{name}': unknown operator '{op}'" for op in cond if op not in OPERATORS)
+
+
 def validate(signals: list[dict]) -> list[str]:
-    problems = []
+    problems: list[str] = []
     for sig in signals:
         name = sig.get("name", "<unnamed>")
-        if sig.get("rule") not in RULE_TYPES:
+        rule = RULES.get(sig.get("rule"))
+        if rule is None:
             problems.append(f"signal '{name}': rule must be one of {', '.join(RULE_TYPES)}")
-        for entity in required_entities(sig):
-            if entity not in model.ENTITIES:
-                problems.append(f"signal '{name}': unknown entity '{entity}'")
-        for level in (sig.get("thresholds") or {}):
+            continue
+        _check_inputs(name, sig, rule.inputs, None, problems)
+        for level, limit in (sig.get("thresholds") or {}).items():
             if level not in SEVERITIES:
                 problems.append(f"signal '{name}': threshold level '{level}' must be low/medium/high")
+            elif to_num(limit) is None:
+                problems.append(f"signal '{name}': threshold '{level}' must be a number")
     return problems

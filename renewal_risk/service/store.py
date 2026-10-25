@@ -11,6 +11,7 @@ deployment later; a self-hosted install uses the single tenant "default".
   admin_users       admin-UI logins (scrypt password hashes)
   config_versions   every config file the admin UI saved (audit + rollback)
   mapping_versions  every approved field mapping
+  action_items      recommended actions sent to their owners, and what they did
 """
 from __future__ import annotations
 
@@ -48,6 +49,13 @@ CREATE TABLE IF NOT EXISTS config_versions (
     id INTEGER PRIMARY KEY AUTOINCREMENT, tenant_id TEXT NOT NULL DEFAULT 'default',
     name TEXT NOT NULL, content TEXT NOT NULL, saved_by TEXT, created_at REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS action_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, tenant_id TEXT NOT NULL DEFAULT 'default',
+    account_id TEXT NOT NULL, account_name TEXT, assessment_id INTEGER, playbook_id TEXT, action_key TEXT NOT NULL,
+    action TEXT NOT NULL, owner_email TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'open', due_at REAL,
+    snoozed_until REAL, created_at REAL NOT NULL, updated_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS action_items_key ON action_items(tenant_id, account_id, action_key, owner_email);
 CREATE TABLE IF NOT EXISTS mapping_versions (
     id INTEGER PRIMARY KEY AUTOINCREMENT, tenant_id TEXT NOT NULL DEFAULT 'default',
     source TEXT NOT NULL, entity TEXT NOT NULL, fields TEXT NOT NULL, approved_by TEXT, created_at REAL NOT NULL
@@ -196,3 +204,57 @@ class Store:
     def save_mapping_version(self, source: str, entity: str, fields: dict, approved_by: str | None) -> None:
         self._write("INSERT INTO mapping_versions (tenant_id, source, entity, fields, approved_by, created_at) VALUES (?, ?, ?, ?, ?, ?)",
                     (self.tenant_id, source, entity, json.dumps(fields), approved_by, time.time()))
+
+    # -- action items ----------------------------------------------------------
+
+    def should_notify(self, account_id: str, action_key: str, owner_email: str, cooldown_days: float = 30) -> bool:
+        """False while the same action for the same person is open, snoozed, or
+        was closed recently — so a scan never repeats a DM."""
+        now = time.time()
+        row = self._one(
+            "SELECT status, snoozed_until, updated_at FROM action_items WHERE tenant_id = ? AND account_id = ? AND action_key = ?"
+            " AND owner_email = ? ORDER BY updated_at DESC LIMIT 1", (self.tenant_id, account_id, action_key, owner_email))
+        if row is None:
+            return True
+        if row["status"] == "open":
+            return False
+        if row["status"] == "snoozed":
+            return (row["snoozed_until"] or 0) <= now
+        return now - row["updated_at"] > cooldown_days * 86400
+
+    def add_action_item(self, account_id: str, account_name: str | None, assessment_id: int | None, playbook_id: str,
+                        action_key: str, action: str, owner_email: str, due_in_days: int) -> int:
+        now = time.time()
+        cur = self._write(
+            "INSERT INTO action_items (tenant_id, account_id, account_name, assessment_id, playbook_id, action_key, action, owner_email,"
+            " status, due_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?)",
+            (self.tenant_id, account_id, account_name, assessment_id, playbook_id, action_key, action[:300], owner_email,
+             now + due_in_days * 86400, now, now))
+        return cur.lastrowid
+
+    def action_item(self, item_id: int) -> dict | None:
+        row = self._one("SELECT * FROM action_items WHERE tenant_id = ? AND id = ?", (self.tenant_id, item_id))
+        return dict(row) if row else None
+
+    def set_action_status(self, item_id: int, status: str, snooze_days: float | None = None) -> dict | None:
+        if status not in ("open", "done", "snoozed", "not_relevant"):
+            raise ValueError(f"unknown status {status!r}")
+        now = time.time()
+        self._write("UPDATE action_items SET status = ?, snoozed_until = ?, updated_at = ? WHERE tenant_id = ? AND id = ?",
+                    (status, now + snooze_days * 86400 if snooze_days else None, now, self.tenant_id, item_id))
+        return self.action_item(item_id)
+
+    def action_items(self, status: str | None = None, limit: int = 200) -> list[dict]:
+        sql = "SELECT * FROM action_items WHERE tenant_id = ?" + (" AND status = ?" if status else "") + " ORDER BY created_at DESC LIMIT ?"
+        params = (self.tenant_id, status, limit) if status else (self.tenant_id, limit)
+        return [dict(r) for r in self._all(sql, params)]
+
+    def action_summary(self, days: int = 30) -> dict:
+        row = self._one(
+            "SELECT COUNT(*) AS total, SUM(status = 'open') AS open, SUM(status = 'done') AS done,"
+            " SUM(status = 'snoozed') AS snoozed, SUM(status = 'not_relevant') AS not_relevant,"
+            " SUM(status = 'open' AND due_at < ?) AS overdue FROM action_items WHERE tenant_id = ? AND created_at >= ?",
+            (time.time(), self.tenant_id, time.time() - days * 86400))
+        summary = {k: int(row[k] or 0) for k in ("total", "open", "done", "snoozed", "not_relevant", "overdue")}
+        summary["completion_rate"] = round(summary["done"] / summary["total"], 3) if summary["total"] else None
+        return summary

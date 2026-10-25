@@ -1,5 +1,5 @@
 from renewal_risk.core import signals
-from renewal_risk.core.settings import DEFAULTS_DIR, read_yaml
+from renewal_risk.core.settings import DEFAULTS_DIR, all_signals, load_packs, read_yaml
 
 AS_OF = "2026-10-10"
 DEFAULTS = read_yaml(DEFAULTS_DIR / "signals.yaml")["signals"]
@@ -74,3 +74,34 @@ def test_bad_signal_config_does_not_crash():
     out = signals.evaluate([{"name": "x", "rule": "count", "entity": "ticket", "where": {"created_at": {"lt": None}}}],
                            {"ticket": [rec("ticket", "t", created_at="2026-01-01")]}, AS_OF, {"ticket"})
     assert out  # evaluated without raising
+
+
+def test_every_rule_type_explains_in_plain_english():
+    by_rule = {}
+    for pack in load_packs().values():
+        for sig in all_signals(pack):
+            by_rule.setdefault(sig["rule"], sig)
+    assert set(by_rule) == set(signals.RULE_TYPES)
+    for rule, sig in by_rule.items():
+        text = signals.explain(sig)
+        assert text.endswith(".") and "Unknown" not in text and "{" not in text, (rule, text)
+    assert signals.explain({"rule": "count", "entity": "ticket", "where": {"is_open": True}, "thresholds": {"medium": 2, "high": 3}}) == \
+        "Counts tickets that are open. Medium at 2 or more, high at 3 or more."
+    assert signals.explain({"rule": "nope"}) == "Unknown rule type."
+    assert signals.explain({"rule": "pct_change"}).startswith("Compares")  # an incomplete draft still reads
+
+
+def test_validate_reports_bad_fields_operators_and_thresholds():
+    bad = {"name": "x_signal", "specialist": "relationship", "rule": "count", "entity": "ticket",
+           "where": {"colour": "red", "priority": {"bigger": 3}}, "thresholds": {"medium": "two"}}
+    errors = " ".join(signals.validate([bad]))
+    assert "colour" in errors and "bigger" in errors and "medium" in errors
+    assert signals.validate([{"name": "d", "rule": "date_diff", "entity": "milestone", "thresholds": {"high": 5}}])  # start/end missing
+
+
+def test_builder_metadata_comes_from_the_rule_table():
+    meta = signals.builder_metadata()
+    assert set(meta["rules"]) == set(signals.RULE_TYPES)
+    assert {i["kind"] for r in meta["rules"].values() for i in r["inputs"]} <= {
+        "entity", "where", "number", "date_field", "field", "agg", "thresholds", "severity", "group", "cases"}
+    assert "within_days" in meta["operators"]

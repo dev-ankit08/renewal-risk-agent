@@ -40,9 +40,13 @@ any MCP server ──────────────────┘        
   `renewal-risk setup check`, `link --review` and `mapping suggest` work from the
   command line too.
 * **Explained, cited, actionable.** Every signal cites the record it came from,
-  e.g. `billing:invoice/in_123`. Any citation the model invents is dropped.
-  Actions name an owner role, a priority and a due date, and companies can
-  supply their own playbook.
+  e.g. `billing:invoice/in_123`, and says in plain English how it is calculated.
+  Any citation the model invents is dropped. Actions name an owner, a priority,
+  a due date and why they were recommended. Each action is DM'd on Slack to the
+  person who owns it, with Done / Snooze / Not relevant buttons.
+* **Your own signals and playbook, no code.** Admins describe a warning sign in
+  plain English. AI drafts it, the admin tests it on real accounts and saves it.
+  The playbook records the company's approved actions, steps and runbook links.
 * **Built for Project Directors in Slack.** Ask with `/renewal-risk Acme` or
   `@Renewal Risk which renewals this quarter are at risk?`. The bot DMs an alert
   when an account rises into high risk. Each user only sees the accounts their

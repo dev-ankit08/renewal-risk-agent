@@ -170,13 +170,100 @@ export interface Linking {
   rules?: Record<string, unknown[]>;
 }
 
+// A signal definition as stored in signals.yaml (rule-specific keys vary).
+export type SignalSpec = { name: string; description?: string; specialist?: string; rule?: string; how_calculated_note?: string;
+  thresholds?: Record<string, number>; direction?: string; value_template?: string } & Record<string, unknown>;
+
 export interface SignalRow {
   name: string;
   description: string;
   specialist: string;
+  origin: "built-in" | "custom";
   enabled: boolean;
+  rule: string;
   thresholds: Record<string, number>;
   direction: string;
   entities: string[];
   has_data: boolean;
+  explanation: string;
+  how_calculated_note: string;
+  spec?: SignalSpec;
+}
+
+export interface RuleInput {
+  key: string;
+  kind: "entity" | "where" | "number" | "date_field" | "field" | "agg" | "thresholds" | "severity" | "group" | "cases";
+  optional?: boolean;
+  required?: boolean;
+  inputs?: RuleInput[];
+}
+
+export interface Builder {
+  rules: Record<string, { label: string; summary: string; inputs: RuleInput[] }>;
+  operators: Record<string, string>;
+  severities: string[];
+  entities: Record<string, Record<string, FieldDoc>>;
+  specialists: string[];
+}
+
+export interface SignalTest {
+  tested: number;
+  fired: number;
+  explanation: string;
+  results: { account_id: string; name?: string; fired: boolean; severity: string | null; value: string; gaps: string[] }[];
+}
+
+export interface OwnerRole {
+  name: string;
+  find: { account_field?: string; access_role?: string; emails?: string[] };
+}
+
+export interface Play {
+  id: string;
+  name: string;
+  description: string;
+  signals: string[];
+  min_severity: string;
+  action: string;
+  steps: string[];
+  owner_role: string;
+  priority: string;
+  due_in_days: number;
+  link: string;
+  notify: boolean;
+}
+
+export interface Playbooks {
+  owner_roles: OwnerRole[];
+  plays: Play[];
+  signals: string[];
+}
+
+export interface ActionSummary {
+  total: number;
+  open: number;
+  done: number;
+  snoozed: number;
+  not_relevant: number;
+  overdue: number;
+  completion_rate: number | null;
+}
+
+export interface ActionItem {
+  id: number;
+  account_id: string;
+  account_name: string;
+  playbook_id: string;
+  action: string;
+  owner_email: string;
+  status: string;
+  due_at: number;
+  created_at: number;
+}
+
+export interface ActionSettings {
+  dm_owners: boolean;
+  min_band: string;
+  snooze_days: number;
+  cooldown_days: number;
 }

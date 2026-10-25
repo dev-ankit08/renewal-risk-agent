@@ -1,80 +1,122 @@
-import { useEffect, useState } from "react";
-import { api, SaveResult, SignalRow } from "../api";
+import { Fragment, lazy, Suspense, useEffect, useState } from "react";
+import { api, Playbooks, SaveResult, SignalRow, SignalSpec } from "../api";
 import { Notice, SaveFeedback, useLoad } from "../ui";
+import OwnersTab from "./signals/OwnersTab";
+import PlaybookTab from "./signals/PlaybookTab";
 
-type Play = { signals: string[]; action: string; owner_role: string; due_in_days: number };
+const SignalDialog = lazy(() => import("./signals/SignalDialog")); // only loaded when opened
+
+const TABS = { signals: "Signals", playbook: "Playbook", owners: "Owners & notifications" } as const;
+type Tab = keyof typeof TABS;
+type Dialog = { initial: SignalSpec | null; originalName: string | null };
+
+// A built-in duplicated as a starting point for a custom signal.
+const copyOf = (s: SignalRow): SignalSpec => ({
+  ...(s.spec ?? { rule: s.rule, specialist: s.specialist, thresholds: s.thresholds, direction: s.direction }),
+  name: `${s.name}_custom`.slice(0, 48), description: s.description, how_calculated_note: s.how_calculated_note,
+});
 
 export default function SignalsPage() {
   const data = useLoad(() => api.get<{ signals: SignalRow[]; pack: string }>("/signals"));
-  const playbooks = useLoad(() => api.get<{ owner_roles: string[]; plays: Play[] }>("/playbooks"));
+  const playbooks = useLoad(() => api.get<Playbooks>("/playbooks"));
+  const [tab, setTab] = useState<Tab>("signals");
   const [rows, setRows] = useState<SignalRow[]>([]);
-  const [plays, setPlays] = useState<Play[]>([]);
-  const [roles, setRoles] = useState("");
+  const [book, setBook] = useState<Playbooks | null>(null);
+  const [open, setOpen] = useState<string | null>(null);
+  const [dialog, setDialog] = useState<Dialog | null>(null);
   const [result, setResult] = useState<SaveResult | null>(null);
+  const [error, setError] = useState("");
 
   useEffect(() => { if (data.data) setRows(data.data.signals); }, [data.data]);
-  useEffect(() => {
-    if (playbooks.data) { setPlays(playbooks.data.plays ?? []); setRoles((playbooks.data.owner_roles ?? []).join(", ")); }
-  }, [playbooks.data]);
+  useEffect(() => { if (playbooks.data) setBook(playbooks.data); }, [playbooks.data]);
 
-  const saveSignals = () => api.put<SaveResult>("/signals", { signals: rows }).then(setResult);
-  const savePlays = () =>
-    api.put<SaveResult>("/playbooks", { owner_roles: roles.split(",").map((r) => r.trim()).filter(Boolean), plays }).then(setResult);
+  const act = (p: Promise<SaveResult>) => { setError(""); p.then(setResult).catch((e: Error) => setError(e.message)); };
+  const saveSignals = () => act(api.put<SaveResult>("/signals", { signals: rows }));
+  const savePlaybook = () => book && act(api.put<SaveResult>("/playbooks", { owner_roles: book.owner_roles, plays: book.plays }));
+  const remove = (name: string) => {
+    if (window.confirm(`Delete the custom signal '${name}'? Plays that use it will stop matching it.`))
+      act(api.del<SaveResult>(`/signals/custom/${encodeURIComponent(name)}`).then((r) => { data.reload(); playbooks.reload(); return r; }));
+  };
+  const saved = () => { setDialog(null); setResult({ ok: true, errors: [], warnings: [] }); data.reload(); playbooks.reload(); };
   const setRow = (i: number, patch: Partial<SignalRow>) => setRows(rows.map((r, j) => (i === j ? { ...r, ...patch } : r)));
-  const setPlay = (i: number, patch: Partial<Play>) => setPlays(plays.map((p, j) => (i === j ? { ...p, ...patch } : p)));
 
   return (
     <>
       <h2>Signals & playbooks</h2>
-      <p className="lead">Which risk signals the agent looks for, at what thresholds — and the actions your company prefers.</p>
-      <Notice kind="bad">{data.error || playbooks.error}</Notice>
-      <SaveFeedback result={result} />
-      <div className="card" style={{ padding: 0 }}>
-        <table>
-          <thead><tr><th>On</th><th>Signal</th><th>Medium at</th><th>High at</th><th>Data</th></tr></thead>
-          <tbody>
-            {rows.map((s, i) => (
-              <tr key={s.name}>
-                <td><input type="checkbox" checked={s.enabled} onChange={(e) => setRow(i, { enabled: e.target.checked })} aria-label={`enable ${s.name}`} /></td>
-                <td><strong>{s.name}</strong> <span className="badge">{s.specialist}</span><div className="muted small">{s.description}</div></td>
-                {(["medium", "high"] as const).map((lvl) => (
-                  <td key={lvl} style={{ width: 110 }}>
-                    <input type="number" step="any" value={s.thresholds[lvl] ?? ""} placeholder="—"
-                      onChange={(e) => setRow(i, { thresholds: { ...s.thresholds, [lvl]: e.target.value === "" ? (undefined as unknown as number) : Number(e.target.value) } })} />
-                  </td>
-                ))}
-                <td>{s.has_data ? <span className="badge ok">available</span> : <span className="badge warn" title={s.entities.join(", ")}>no source</span>}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-      <p><button className="primary" onClick={saveSignals}>Save signals</button></p>
-
-      <div className="card">
-        <h3>Playbook</h3>
-        <p className="muted">When these signals fire, the agent recommends your approved action (adapted to the account).</p>
-        <label>Owner roles <span className="hint">— comma separated</span></label>
-        <input value={roles} onChange={(e) => setRoles(e.target.value)} />
-        {plays.map((p, i) => (
-          <div key={i} className="card" style={{ marginTop: 10 }}>
-            <label>When any of these signals fire <span className="hint">— comma separated names</span></label>
-            <input value={p.signals.join(", ")} onChange={(e) => setPlay(i, { signals: e.target.value.split(",").map((x) => x.trim()).filter(Boolean) })} />
-            <label>Recommended action</label>
-            <input value={p.action} onChange={(e) => setPlay(i, { action: e.target.value })} />
-            <div className="row">
-              <div style={{ flex: 2 }}><label>Owner</label><input value={p.owner_role} onChange={(e) => setPlay(i, { owner_role: e.target.value })} /></div>
-              <div style={{ flex: 1 }}><label>Within (days)</label><input type="number" value={p.due_in_days} onChange={(e) => setPlay(i, { due_in_days: Number(e.target.value) })} /></div>
-              <button className="danger" style={{ alignSelf: "flex-end" }} onClick={() => setPlays(plays.filter((_, j) => j !== i))}>Remove</button>
-            </div>
-          </div>
+      <p className="lead">Which risk signals the agent looks for and how each is calculated, the actions your company prefers, and who gets them.</p>
+      <div className="tabs" role="tablist">
+        {(Object.keys(TABS) as Tab[]).map((t) => (
+          <button key={t} role="tab" aria-selected={tab === t} className={tab === t ? "active" : ""} onClick={() => { setTab(t); setResult(null); }}>{TABS[t]}</button>
         ))}
-        <div className="row" style={{ marginTop: 10 }}>
-          <button onClick={() => setPlays([...plays, { signals: [], action: "", owner_role: "Account owner", due_in_days: 14 }])}>+ Add play</button>
-          <span className="spacer" />
-          <button className="primary" onClick={savePlays}>Save playbook</button>
-        </div>
       </div>
+      <Notice kind="bad">{data.error || playbooks.error || error}</Notice>
+      <SaveFeedback result={result} />
+
+      {tab === "signals" && (
+        <>
+          <div className="row" style={{ marginBottom: 10 }}>
+            <span className="muted">Built-in signals come with your industry pack; add your own for the warning signs only your company knows.</span>
+            <span className="spacer" />
+            <button className="primary" onClick={() => setDialog({ initial: null, originalName: null })}>+ New signal</button>
+          </div>
+          <div className="card" style={{ padding: 0 }}>
+            <table>
+              <thead><tr><th>On</th><th>Signal</th><th>Medium at</th><th>High at</th><th>Data</th><th /></tr></thead>
+              <tbody>
+                {rows.map((s, i) => (
+                  <Fragment key={s.name}>
+                    <tr>
+                      <td><input type="checkbox" checked={s.enabled} onChange={(e) => setRow(i, { enabled: e.target.checked })} aria-label={`enable ${s.name}`} /></td>
+                      <td>
+                        <strong>{s.name}</strong> <span className={`badge ${s.origin === "custom" ? "ok" : ""}`}>{s.origin}</span> <span className="badge">{s.specialist}</span>
+                        <div className="muted small">{s.description}</div>
+                        <button className="link small" onClick={() => setOpen(open === s.name ? null : s.name)} aria-expanded={open === s.name}>How it's calculated {open === s.name ? "▴" : "▾"}</button>
+                      </td>
+                      {(["medium", "high"] as const).map((lvl) => (
+                        <td key={lvl} style={{ width: 110 }}>
+                          <input type="number" step="any" value={s.thresholds[lvl] ?? ""} placeholder="—" aria-label={`${s.name} ${lvl}`}
+                            onChange={(e) => setRow(i, { thresholds: { ...s.thresholds, [lvl]: e.target.value === "" ? (undefined as unknown as number) : Number(e.target.value) } })} />
+                        </td>
+                      ))}
+                      <td>{s.has_data ? <span className="badge ok">available</span> : <span className="badge warn" title={s.entities.join(", ")}>no source</span>}</td>
+                      <td className="nowrap">
+                        {s.origin === "custom" ? (
+                          <>
+                            <button onClick={() => setDialog({ initial: s.spec ?? null, originalName: s.name })}>Edit</button>{" "}
+                            <button className="danger" onClick={() => remove(s.name)}>Delete</button>
+                          </>
+                        ) : <button onClick={() => setDialog({ initial: copyOf(s), originalName: null })} title="Start a custom signal from this one">Duplicate</button>}
+                      </td>
+                    </tr>
+                    {open === s.name && (
+                      <tr className="explain-row">
+                        <td />
+                        <td colSpan={5}>
+                          <div className="explain">
+                            <div>{s.explanation}</div>
+                            {s.how_calculated_note && <div className="muted small">{s.how_calculated_note}</div>}
+                            <div className="muted small">Data from: {s.entities.join(", ") || "—"}</div>
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                  </Fragment>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <p><button className="primary" onClick={saveSignals}>Save signals</button></p>
+        </>
+      )}
+
+      {tab === "playbook" && book && <PlaybookTab data={book} onChange={(plays) => setBook({ ...book, plays })} onSave={savePlaybook} />}
+      {tab === "owners" && book && <OwnersTab roles={book.owner_roles} onChange={(owner_roles) => setBook({ ...book, owner_roles })} onSave={savePlaybook} />}
+
+      {dialog && (
+        <Suspense fallback={null}>
+          <SignalDialog initial={dialog.initial} originalName={dialog.originalName} onClose={() => setDialog(null)} onSaved={saved} />
+        </Suspense>
+      )}
     </>
   );
 }

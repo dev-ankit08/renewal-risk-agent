@@ -34,6 +34,8 @@ from pathlib import Path
 import yaml
 from dotenv import load_dotenv
 
+from .playbooks import normalize as normalize_playbooks
+
 load_dotenv()  # .env in the working directory, never overrides real env vars
 
 PACKAGE_DIR = Path(__file__).resolve().parent.parent
@@ -261,17 +263,21 @@ def all_signals(pack: dict) -> list[dict]:
     return out
 
 
-def _load_signals(cfg_dir: Path, pack: dict) -> list[dict]:
-    defaults = all_signals(pack)
+def signal_catalog(cfg_dir: Path, pack: dict) -> list[dict]:
+    """Every signal a company has, enabled or not: built-ins (with the company's
+    overrides merged in) followed by its custom signals, each tagged `origin`."""
     user = read_yaml(cfg_dir / "signals.yaml")
     if user.get("replace_defaults"):
-        merged = user.get("signals", [])
-    else:
-        by_name = {s["name"]: s for s in defaults}
-        for sig in user.get("signals", []) or []:
-            by_name[sig["name"]] = deep_merge(by_name.get(sig["name"], {}), sig)
-        merged = list(by_name.values())
-    return [s for s in merged if s.get("enabled", True)]
+        return [{**s, "origin": "custom"} for s in user.get("signals", [])]
+    by_name = {s["name"]: {**s, "origin": "built-in"} for s in all_signals(pack)}
+    for sig in user.get("signals", []) or []:
+        base = by_name.get(sig["name"])
+        by_name[sig["name"]] = deep_merge(base, sig) if base else {**sig, "origin": "custom"}
+    return list(by_name.values())
+
+
+def _load_signals(cfg_dir: Path, pack: dict) -> list[dict]:
+    return [s for s in signal_catalog(cfg_dir, pack) if s.get("enabled", True)]
 
 
 def _secret_lookup(cfg_dir: Path, tenant_id: str):
@@ -328,7 +334,8 @@ def load_settings(cfg_dir: Path | str | None = None, tenant_id: str = "default")
 
     access = _interpolate_env(read_yaml(cfg_dir / "access.yaml"), missing_env, secrets)
     slack = _interpolate_env(read_yaml(cfg_dir / "slack.yaml"), missing_env, secrets)
-    playbooks = read_yaml(cfg_dir / "playbooks.yaml") or pack.get("playbooks") or {}
+    pack_playbooks = pack.get("playbooks") or {}
+    playbooks = normalize_playbooks(read_yaml(cfg_dir / "playbooks.yaml") or pack_playbooks, default_roles=pack_playbooks.get("owner_roles"))
 
     return Settings(
         dir=cfg_dir,

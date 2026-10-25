@@ -72,7 +72,8 @@ def evidence_modal(view: dict) -> dict:
     blocks = []
     for s in view.get("signals", [])[:30]:
         blocks.append(section(f"{SEV_EMOJI.get(s['severity'], '')} *{_escape(s['name'])}* ({s['severity']}, {s.get('specialist', '')})\n"
-                              f"{_escape(s['value'])}\n`{_escape(s['evidence_ref'])}`"))
+                              f"{_escape(s['value'])}\n`{_escape(s['evidence_ref'])}`"
+                              + (f"\n_How it's calculated:_ {_escape(s['how_calculated'])}" if s.get("how_calculated") else "")))
     if not blocks:
         blocks.append(section("No signals were found."))
     gaps = view.get("gaps") or []
@@ -147,3 +148,41 @@ def answer_blocks(answer: dict, terms: dict | None = None) -> tuple[str, list[di
         names = "\n".join(f"• {_escape(c['name'])}" for c in answer.get("candidates", [])[:10])
         return answer["message"], [section(f"{_escape(answer['message'])}\n{names}")]
     return answer.get("message", "Something went wrong."), message_blocks(answer.get("message", "Something went wrong."))
+
+
+ACTION_STATUS = {"done": ":white_check_mark: Marked done", "snoozed": ":zzz: Snoozed", "not_relevant": ":no_entry_sign: Marked not relevant"}
+
+
+def action_blocks(view: dict, action: dict, play: dict | None, item_id: int, status: str | None = None) -> list[dict]:
+    """The DM an action owner receives. With `status`, the buttons are replaced
+    by what the owner chose."""
+    band = view["band"]
+    blocks = [section(f"{BAND_EMOJI.get(band, '')} *{_escape(view['account_name'])}* is *{band.upper()} risk* ({view['score']}/100) — "
+                      f"you are the owner of this action")]
+    head = f"*{_escape(action['action'])}*\nPriority {action['priority']} · due in {action['due_in_days']} days"
+    if action.get("why"):
+        head += f"\n_Why:_ {_escape(action['why'])}"
+    blocks.append(section(head))
+    if play:
+        extra = [f"From your playbook: *{_escape(play['name'])}*"]
+        if play.get("description"):
+            extra.append(_escape(play["description"]))
+        extra += [f"{i}. {_escape(step)}" for i, step in enumerate(play.get("steps") or [], 1)]
+        if play.get("link"):
+            extra.append(f"<{play['link']}|Open the runbook>")
+        blocks.append(section("\n".join(extra)))
+    refs = set(action.get("evidence_refs") or [])
+    evidence = [s for s in view.get("signals", []) if s["evidence_ref"] in refs][:4]
+    for s in evidence:
+        blocks.append(context(f"{SEV_EMOJI.get(s['severity'], '')} {_escape(s['value'])}"
+                              + (f" — _{_escape(s['how_calculated'])}_" if s.get("how_calculated") else "")))
+    if status:
+        blocks.append(context(ACTION_STATUS.get(status, status)))
+        return blocks
+    value = json.dumps({"item_id": item_id, "account_id": view["account_id"]})
+    blocks.append({"type": "actions", "elements": [
+        {"type": "button", "style": "primary", "text": {"type": "plain_text", "text": "Done"}, "action_id": "rr_action_done", "value": value},
+        {"type": "button", "text": {"type": "plain_text", "text": "Snooze 7 days"}, "action_id": "rr_action_snooze", "value": value},
+        {"type": "button", "text": {"type": "plain_text", "text": "Not relevant"}, "action_id": "rr_action_not_relevant", "value": value},
+    ]})
+    return blocks
