@@ -1,11 +1,16 @@
 import { useState } from "react";
-import { api, AuthMethod, Catalog, Category, SaveResult, SourceInfo, Status, SystemOption } from "../api";
+import { api, AuthMethod, Catalog, Category, SaveResult, Section, SourceInfo, Status, SystemOption } from "../api";
+import Checklist from "../Checklist";
 import { go, label, Modal, Notice, SaveFeedback, useLoad } from "../ui";
+import CsvModal from "./sources/CsvModal";
+import SectionConnect from "./sources/SectionConnect";
+import SectionModal from "./sources/SectionModal";
 
 export default function SourcesPage({ params, status, onPackChange }: { params: URLSearchParams; status: Status; onPackChange: () => void }) {
   const catalog = useLoad(() => api.get<Catalog>("/catalog"));
   const sources = useLoad(() => api.get<{ sources: SourceInfo[]; primary: string }>("/sources"));
   const [adding, setAdding] = useState<Category | null>(null);
+  const [editing, setEditing] = useState<Section | null | "new">(null);
   const [result, setResult] = useState<SaveResult | null>(null);
   const [tests, setTests] = useState<Record<string, { ok: boolean; detail: string } | "running">>({});
 
@@ -24,6 +29,11 @@ export default function SourcesPage({ params, status, onPackChange }: { params: 
     if (!confirm(`Remove the source "${name}" and its stored credentials?`)) return;
     api.del<SaveResult>(`/sources/${name}`).then((r) => { setResult(r); reload(); });
   };
+  const removeSection = (c: Category) => {
+    if (!confirm(`Delete the section "${c.label}"? Its connections and specialist are removed; the data in your systems is untouched.`)) return;
+    api.del<SaveResult>(`/sections/${c.key}`).then((r) => { setResult(r); reload(); })
+      .catch((e: Error) => setResult({ ok: false, errors: [e.message], warnings: [] }));
+  };
   const changePack = (pack: string) =>
     api.put<SaveResult>("/pack", { pack }).then((r) => { setResult(r); onPackChange(); reload(); });
 
@@ -38,6 +48,7 @@ export default function SourcesPage({ params, status, onPackChange }: { params: 
           <p className="lead">Pick where each kind of data lives, sign in, and test the connection.</p>
         </div>
         <span className="spacer" />
+        <button onClick={() => setEditing("new")}>+ Add section</button>
         {cat && (
           <label style={{ margin: 0 }}>
             Business type{" "}
@@ -49,6 +60,7 @@ export default function SourcesPage({ params, status, onPackChange }: { params: 
       </div>
       {params.get("connected") && <Notice kind="ok">Connected {params.get("connected")}. Test it, then map its fields.</Notice>}
       {params.get("oauth_error") && <Notice kind="bad">Sign-in failed: {params.get("oauth_error")}</Notice>}
+      <Checklist />
       <SaveFeedback result={result} />
       {(catalog.error || sources.error) && <Notice kind="bad">{catalog.error || sources.error}</Notice>}
 
@@ -56,12 +68,27 @@ export default function SourcesPage({ params, status, onPackChange }: { params: 
         <div className="card" key={c.key}>
           <div className="row">
             <h3>{c.label}</h3>
+            {c.custom && <span className="badge ok">custom section</span>}
             {c.required && <span className="badge">required</span>}
             {c.configured_sources.length > 0 ? <span className="badge ok">connected</span> : <span className="badge warn">not connected</span>}
             <span className="spacer" />
+            {c.custom && c.section && (
+              <>
+                <button onClick={() => setEditing(c.section!)}>Edit</button>
+                <button onClick={() => go(`signals?new=${c.entities[0]}&specialist=${c.key}`)}>+ Add warning sign</button>
+                <button className="danger" onClick={() => removeSection(c)}>Delete</button>
+              </>
+            )}
             <button onClick={() => setAdding(c)}>+ Connect a system</button>
           </div>
           <p className="muted">{c.description}</p>
+          {c.section && (
+            <p className="small">
+              <span className="muted">Data type</span> <strong>{label(c.section.data_type.name)}</strong>{" "}
+              <span className="muted">({c.section.data_type.fields.map((f) => label(f.name)).join(", ")})</span>
+              <br /><span className="muted">Its specialist looks for:</span> {c.section.focus}
+            </p>
+          )}
           {c.configured_sources.map((name) => {
             const s = byName[name];
             if (!s) return null;
@@ -89,7 +116,14 @@ export default function SourcesPage({ params, status, onPackChange }: { params: 
         </div>
       ))}
 
-      {adding && cat && (
+      {editing && (
+        <SectionModal section={editing === "new" ? null : editing} salesforce={cat?.salesforce_sources ?? []}
+          onClose={() => setEditing(null)} onSaved={(r) => { setEditing(null); setResult(r); reload(); }} />
+      )}
+      {adding?.custom && (
+        <SectionConnect category={adding} salesforce={cat?.salesforce_sources ?? []} onClose={() => setAdding(null)} onSaved={(r, name) => { setAdding(null); setResult(r); reload(); if (name) test(name); }} />
+      )}
+      {adding && !adding.custom && cat && (
         <ConnectModal
           category={adding}
           catalog={cat}
@@ -133,7 +167,16 @@ function ConnectModal(props: {
     setAlso({});
   };
 
-  if (choice === "csv") return <CsvModal {...props} name={name} setName={setName} onPick={pick} />;
+  const picker = (
+    <>
+      <label>System</label>
+      <select value={choice} onChange={(e) => pick(e.target.value)}>
+        {category.systems.map((s) => <option key={s.preset} value={s.preset}>{s.label}</option>)}
+        <option value="csv">CSV / Excel upload</option>
+      </select>
+    </>
+  );
+  if (choice === "csv") return <CsvModal category={category} picker={picker} name={name} setName={setName} onClose={props.onClose} onSaved={props.onSaved} />;
 
   const otherEntities = system ? allPresetEntities(props.catalog, system.preset).filter((e) => !category.entities.includes(e)) : [];
   const save = () => {
@@ -155,11 +198,7 @@ function ConnectModal(props: {
 
   return (
     <Modal title={`Connect: ${category.label}`} onClose={props.onClose}>
-      <label>System</label>
-      <select value={choice} onChange={(e) => pick(e.target.value)}>
-        {category.systems.map((s) => <option key={s.preset} value={s.preset}>{s.label}</option>)}
-        <option value="csv">CSV / Excel upload</option>
-      </select>
+      {picker}
       {system && <p className="muted small">{system.description}</p>}
       <label>Source name <span className="hint">— a short id, e.g. crm, billing, support</span></label>
       <input value={name} onChange={(e) => setName(e.target.value.toLowerCase().replace(/[^a-z0-9_]/g, ""))} />
@@ -219,68 +258,4 @@ function allPresetEntities(catalog: Catalog, preset: string): string[] {
   const out = new Set<string>();
   for (const c of catalog.categories) for (const s of c.systems) if (s.preset === preset) s.provides.forEach((e) => out.add(e));
   return [...out];
-}
-
-function CsvModal(props: {
-  category: Category; existing: string[]; onClose: () => void; onSaved: (r: SaveResult, name: string, oauth: boolean) => void;
-  name: string; setName: (n: string) => void; onPick: (p: string) => void;
-}) {
-  const [file, setFile] = useState<File | null>(null);
-  const [columns, setColumns] = useState<string[]>([]);
-  const [uploaded, setUploaded] = useState<string | null>(null);
-  const [entity, setEntity] = useState(props.category.entities[0]);
-  const [match, setMatch] = useState("");
-  const [error, setError] = useState<string | null>(null);
-
-  const upload = async () => {
-    if (!file) return;
-    setError(null);
-    try {
-      await api.put(`/sources/${props.name}`, { type: "csv" });
-      const form = new FormData();
-      form.append("file", file);
-      const r = await api.post<{ file: string; columns: string[] }>(`/sources/${props.name}/upload`, form);
-      setUploaded(r.file);
-      setColumns(r.columns);
-    } catch (e) {
-      setError((e as Error).message);
-    }
-  };
-  const finish = () =>
-    api.put<SaveResult>(`/sources/${props.name}/csv-entity`, { entity, file: uploaded, match: match || null })
-      .then((r) => { props.onSaved(r, "", false); go(`mapping/${props.name}/${entity}`); })
-      .catch((e: Error) => setError(e.message));
-
-  return (
-    <Modal title={`Upload: ${props.category.label}`} onClose={props.onClose}>
-      <label>System</label>
-      <select value="csv" onChange={(e) => props.onPick(e.target.value)}>
-        {props.category.systems.map((s) => <option key={s.preset} value={s.preset}>{s.label}</option>)}
-        <option value="csv">CSV / Excel upload</option>
-      </select>
-      <label>Source name</label>
-      <input value={props.name} onChange={(e) => props.setName(e.target.value.toLowerCase().replace(/[^a-z0-9_]/g, ""))} />
-      <label>File (.csv or .xlsx)</label>
-      <input type="file" accept=".csv,.xlsx" onChange={(e) => setFile(e.target.files?.[0] ?? null)} />
-      <p><button onClick={upload} disabled={!file}>Upload</button></p>
-      {uploaded && (
-        <>
-          <label>What is in this file?</label>
-          <select value={entity} onChange={(e) => setEntity(e.target.value)}>
-            {props.category.entities.map((e) => <option key={e} value={e}>{label(e)}</option>)}
-          </select>
-          <label>Which column holds the customer / account id? <span className="hint">— leave empty for the customer list itself</span></label>
-          <select value={match} onChange={(e) => setMatch(e.target.value)}>
-            <option value="">(none)</option>
-            {columns.map((c) => <option key={c} value={c}>{c}</option>)}
-          </select>
-          <div className="row" style={{ marginTop: 12 }}>
-            <span className="spacer" />
-            <button className="primary" onClick={finish}>Continue to field mapping</button>
-          </div>
-        </>
-      )}
-      <Notice kind="bad">{error}</Notice>
-    </Modal>
-  );
 }

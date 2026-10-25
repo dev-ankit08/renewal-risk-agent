@@ -79,3 +79,21 @@ def test_renewal_window_listing(ctx):
     rows = ctx.engine.list_renewals((today + timedelta(days=120)).isoformat(), today.isoformat())
     assert [r["account_id"] for r in rows] == ["A006", "A003", "A001", "A002", "A004", "A005"]
     assert rows[0]["name"] == "Wayne Retail"
+
+
+def test_rules_mode_answers_without_any_model_call(ctx, monkeypatch):
+    from renewal_risk.core.llm import AnthropicLLM
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-...")  # the .env.example placeholder
+    assert AnthropicLLM({}).configured is False
+    ctx.settings.agent["llm"]["mode"] = "rules"
+    ctx.settings.sources["crm"]["test_data"] = False  # nothing leaves the service, so no data-retention gate
+    calls = len(ctx.engine.llm.calls)
+    view = ctx.service.ask(ctx.policy.principal_for_email("admin@demo.example"), "Acme Corp")
+    assert len(ctx.engine.llm.calls) == calls  # no model call at all, not even to parse the question
+    assert view["type"] == "single_account" and view["mode"] == "rules" and view["band"] == "high"
+    assert "warning signs found" in view["rationale"] and "_" not in view["rationale"] and view["drivers"]
+    plays = {p["id"]: p for p in ctx.settings.playbooks["plays"]}
+    assert view["recommended_actions"] and all(a["playbook_id"] in plays for a in view["recommended_actions"])
+    assert all(s["how_calculated"] for s in view["signals"])
+    assert set(view["citations"]) == {s["evidence_ref"] for s in view["signals"]}

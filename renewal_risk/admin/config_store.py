@@ -18,7 +18,7 @@ from pathlib import Path
 import yaml
 
 ALLOWED_NAMES = re.compile(
-    r"^(connectors|agent|access|slack|signals|playbooks)\.yaml$|^mappings/[A-Za-z0-9_-]+\.overrides\.yaml$|^links\.csv$"
+    r"^(connectors|agent|access|slack|signals|playbooks|sections)\.yaml$|^mappings/[A-Za-z0-9_-]+\.overrides\.yaml$|^(links|outcomes)\.csv$"
 )
 HEADER = "# Managed by the Renewal Risk admin UI — edits here are kept, but comments may be lost on the next UI save.\n"
 

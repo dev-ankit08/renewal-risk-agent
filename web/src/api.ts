@@ -40,6 +40,72 @@ export interface Status {
   packs: { name: string; label: string; description: string }[];
   callback_url: string;
   model_configured: boolean;
+  workspace: Workspace;
+}
+
+export interface Workspace {
+  active: "home" | "demo";
+  demo_available: boolean;
+}
+
+export interface ChecklistItem {
+  key: string;
+  label: string;
+  done: boolean;
+  detail: string;
+  route: string;
+}
+
+export interface Checklist {
+  items: ChecklistItem[];
+  done: number;
+  total: number;
+  workspace: Workspace;
+}
+
+export interface Rules {
+  weights: Record<"high" | "medium" | "low", number>;
+  thresholds: Record<"high" | "medium", number>;
+}
+
+export interface BacktestMetrics {
+  caught: number;
+  missed: number;
+  false_alarms: number;
+  quiet_correct: number;
+  precision: number;
+  hit_rate: number;
+  f1: number;
+}
+
+export interface BacktestCase {
+  account_id: string;
+  name: string;
+  close_date: string;
+  as_of: string;
+  amount: number | null;
+  outcome: "renewed" | "downgraded" | "churned";
+  predicted: boolean;
+  score: number;
+  enough: boolean;
+  checked: number;
+  total: number;
+  fired: { name: string; severity: string }[];
+}
+
+export interface Backtest {
+  window: { start: string; end: string };
+  lead_days: number;
+  tested: number;
+  at_risk: number;
+  metrics: BacktestMetrics;
+  baseline_caught: number;
+  signals: { name: string; fired: number; preceded_loss: number; precision: number; lift: number | null; approximate: boolean; weak: boolean }[];
+  rules: Rules;
+  suggested: (Rules & { metrics: BacktestMetrics }) | null;
+  cases: BacktestCase[];
+  unknown_outcome: { account_id: string; name: string; close_date: string; stage: string }[];
+  run_at?: number;
 }
 
 export interface AuthParam {
@@ -76,6 +142,24 @@ export interface Category {
   required: boolean;
   systems: SystemOption[];
   configured_sources: string[];
+  custom?: boolean;               // an admin-defined section (sections.yaml)
+  section?: Section;
+}
+
+export type FieldType = "str" | "num" | "date" | "bool" | "list";
+
+export interface SectionField {
+  name: string;
+  type: FieldType;
+  description: string;
+}
+
+export interface Section {
+  key: string;
+  label: string;
+  description: string;
+  data_type: { name: string; description: string; date_field: string; fields: SectionField[] };
+  focus: string;
 }
 
 export interface Catalog {
@@ -83,6 +167,7 @@ export interface Catalog {
   packs: { name: string; label: string; description: string }[];
   categories: Category[];
   generic: { type: string; label: string; description: string }[];
+  salesforce_sources: string[];  // Salesforce connections a custom section can read an object from
   callback_url: string;
 }
 

@@ -37,7 +37,8 @@ def get_context() -> AppContext:
     global _ctx
     with _lock:
         if _ctx is None:
-            _ctx = build_context()
+            from . import workspace  # starts in the workspace that was active when the service stopped
+            _ctx = build_context(workspace.startup_settings())
         return _ctx
 
 
@@ -47,15 +48,18 @@ def set_context(ctx: AppContext | None) -> None:
         _ctx = ctx
 
 
-def reload_context() -> AppContext:
-    """Rebuild everything from config after the admin UI saved a change. The
-    model client (and any injected test double) is carried over."""
+def reload_context(cfg_dir=None, state_root=None) -> AppContext:
+    """Rebuild everything from config after the admin UI saved a change, or from
+    another config folder (a workspace switch). The model client (and any
+    injected test double) is carried over."""
     global _ctx
     from ..core.settings import load_settings
 
     with _lock:
         old = _ctx
-        settings = load_settings(old.settings.dir, old.settings.tenant_id) if old else None
+        if cfg_dir is None and old is not None:
+            cfg_dir, state_root = old.settings.dir, old.settings.state_root
+        settings = load_settings(cfg_dir, old.settings.tenant_id if old else "default", state_root) if cfg_dir else None
         llm = old.engine.llm if old else None
         _ctx = build_context(settings, llm=llm)
     if old is not None:

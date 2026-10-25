@@ -71,19 +71,18 @@ class SalesforceRestConnector(SoqlConnector):
             pages += 1
         return records
 
-    def field_metadata(self, entity: str) -> dict[str, dict]:
-        out = super().field_metadata(entity)  # admin-written descriptions from FieldDefinition
-        for obj in self.objects_for(entity):
-            described = self._get(f"/services/data/{self.api_version}/sobjects/{quote(obj)}/describe")
-            for f in described.get("fields", []):
-                info = out.setdefault(f["name"], {})
-                info.setdefault("label", f.get("label"))
-                info.setdefault("type", f.get("type"))
-                if f.get("inlineHelpText") and not info.get("description"):
-                    info["description"] = f["inlineHelpText"]
-                values = [p.get("value") for p in f.get("picklistValues") or [] if p.get("active", True)]
-                if values:
-                    info["options"] = values[:20]
+    def object_fields(self, obj: str) -> dict[str, dict]:
+        out = super().object_fields(obj)  # admin-written descriptions from FieldDefinition
+        described = self._get(f"/services/data/{self.api_version}/sobjects/{quote(obj)}/describe")
+        for f in described.get("fields", []):
+            info = out.setdefault(f["name"], {})
+            info.setdefault("label", f.get("label"))
+            info.setdefault("type", f.get("type"))
+            if f.get("inlineHelpText") and not info.get("description"):
+                info["description"] = f["inlineHelpText"]
+            values = [p.get("value") for p in f.get("picklistValues") or [] if p.get("active", True)]
+            if values:
+                info["options"] = values[:20]
         return out
 
     def health(self) -> HealthResult:

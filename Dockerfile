@@ -26,6 +26,8 @@ WORKDIR /app
 COPY pyproject.toml README.md ./
 COPY renewal_risk ./renewal_risk
 COPY --from=ui /renewal_risk/admin/static ./renewal_risk/admin/static
+COPY examples/csv-demo/config ./examples/csv-demo/config
+COPY examples/csv-demo/generate.py ./examples/csv-demo/generate.py
 RUN pip install --no-cache-dir ".[all]"
 
 RUN useradd --create-home --uid 10001 app && mkdir -p /app/config /app/state && chown -R app /app
@@ -36,6 +38,7 @@ USER app
 # to the URL people use to reach this service (OAuth callbacks are built from it).
 ENV RENEWAL_RISK_CONFIG_DIR=/app/config \
     RENEWAL_RISK_STATE_DIR=/app/state \
+    RENEWAL_RISK_DEMO_DIR=/app/examples/csv-demo \
     HOST=0.0.0.0 \
     PORT=8080 \
     PYTHONUNBUFFERED=1

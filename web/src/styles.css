@@ -87,3 +87,17 @@ label.inline { display: inline-flex; gap: 6px; align-items: center; font-weight:
 .dm { border: 1px solid var(--line); border-left: 4px solid var(--bad); border-radius: 6px; padding: 10px 12px; margin-top: 10px; }
 .modal textarea { width: 100%; font-family: inherit; }
 .nowrap { white-space: nowrap; }
+.fields td:nth-child(1) { width: 28%; }
+.fields td:nth-child(2) { width: 130px; }
+.fields td:nth-child(4) { width: 44px; }
+/* setup checklist, accuracy */
+.checklist summary { cursor: pointer; list-style: none; }
+.checklist summary .meter { margin-top: 6px; }
+.checklist ol { list-style: none; padding: 0; margin: 10px 0; }
+.checklist li { padding: 4px 0; }
+.checklist li.done { color: var(--muted); }
+.side .progress { display: block; margin: -8px 8px 14px; font-size: .8rem; color: var(--muted); text-decoration: none; }
+.headline .big { font-size: 1.15rem; margin-bottom: 4px; }
+.tiles { display: flex; gap: 12px; margin-top: 12px; flex-wrap: wrap; }
+.tiles > div { flex: 1; min-width: 140px; background: var(--soft); border-radius: 6px; padding: 10px 12px; font-size: .85rem; color: var(--muted); }
+.tiles span { display: block; font-size: 1.5rem; font-weight: 700; color: var(--fg); }

@@ -12,7 +12,8 @@ def render_brief(result: dict) -> str:
     lines = [
         f"# Renewal Risk Brief — {v['account_name']}", "",
         f"**Account:** {v['account_id']}  ", f"**As of:** {v['as_of']}  ",
-        f"**Risk:** {v['score']}/100 ({v['band']}){' — low confidence' if v['abstained'] else ''}", "",
+        ("**Risk:** not enough data to judge" if v["abstained"] else f"**Risk:** {v['score']}/100 ({v['band']})")
+        + (f" — {v['coverage']['checked']} of {v['coverage']['total']} warning signs checked" if v.get("coverage") else ""), "",
         "## Why", v["rationale"], "", "## Recommended actions",
     ]
     lines += [f"- **{a['action']}** — {a['owner_role']}, {a['priority']} priority, within {a['due_in_days']} days "

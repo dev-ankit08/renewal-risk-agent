@@ -149,6 +149,12 @@ class Store:
             (self.tenant_id, since))
         return [dict(r) for r in rows]
 
+    def purge_accounts(self, account_ids: list[str]) -> None:
+        """Forget everything recorded about these accounts (the demo workspace's, on leaving it)."""
+        marks = ",".join("?" * len(account_ids))
+        for table in ("assessments", "runs", "alerts", "feedback", "action_items"):
+            self._write(f"DELETE FROM {table} WHERE tenant_id = ? AND account_id IN ({marks})", (self.tenant_id, *account_ids))
+
     def recent_assessments(self, limit: int = 50) -> list[dict]:
         rows = self._all("SELECT id, account_id, account_name, as_of, score, band, cost_usd, created_at FROM assessments"
                          " WHERE tenant_id = ? ORDER BY created_at DESC LIMIT ?", (self.tenant_id, limit))

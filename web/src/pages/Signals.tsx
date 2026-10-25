@@ -1,6 +1,6 @@
 import { Fragment, lazy, Suspense, useEffect, useState } from "react";
 import { api, Playbooks, SaveResult, SignalRow, SignalSpec } from "../api";
-import { Notice, SaveFeedback, useLoad } from "../ui";
+import { go, Notice, SaveFeedback, useLoad } from "../ui";
 import OwnersTab from "./signals/OwnersTab";
 import PlaybookTab from "./signals/PlaybookTab";
 
@@ -16,7 +16,7 @@ const copyOf = (s: SignalRow): SignalSpec => ({
   name: `${s.name}_custom`.slice(0, 48), description: s.description, how_calculated_note: s.how_calculated_note,
 });
 
-export default function SignalsPage() {
+export default function SignalsPage({ params }: { params: URLSearchParams }) {
   const data = useLoad(() => api.get<{ signals: SignalRow[]; pack: string }>("/signals"));
   const playbooks = useLoad(() => api.get<Playbooks>("/playbooks"));
   const [tab, setTab] = useState<Tab>("signals");
@@ -28,6 +28,12 @@ export default function SignalsPage() {
   const [error, setError] = useState("");
 
   useEffect(() => { if (data.data) setRows(data.data.signals); }, [data.data]);
+  useEffect(() => { // "+ Add warning sign" on a custom section: start a signal on its data, for its specialist
+    const entity = params.get("new");
+    if (!entity) return;
+    setDialog({ initial: { name: "", rule: "count", entity, specialist: params.get("specialist") ?? undefined, thresholds: { medium: 1, high: 2 } }, originalName: null });
+    go("signals");
+  }, [params]);
   useEffect(() => { if (playbooks.data) setBook(playbooks.data); }, [playbooks.data]);
 
   const act = (p: Promise<SaveResult>) => { setError(""); p.then(setResult).catch((e: Error) => setError(e.message)); };

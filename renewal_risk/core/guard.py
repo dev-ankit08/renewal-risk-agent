@@ -55,8 +55,9 @@ def _parse_date(value) -> datetime | None:
         return None
 
 
-def audit_leakage(records: list[dict], as_of_date: str, date_fields=model.OBSERVED_DATE_FIELDS) -> list[dict]:
+def audit_leakage(records: list[dict], as_of_date: str, date_fields=None) -> list[dict]:
     """Every record whose observed-date field falls after as_of. Empty = pass."""
+    date_fields = date_fields or model.observed_date_fields()
     as_of_dt = _parse_date(as_of_date)
     if as_of_dt is None:
         raise GuardViolation(f"invalid as_of_date: {as_of_date!r}")

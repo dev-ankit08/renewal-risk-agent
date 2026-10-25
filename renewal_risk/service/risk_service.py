@@ -46,7 +46,8 @@ def assessment_view(result: dict) -> dict:
         "account_id": result["account_id"],
         "account_name": result.get("account_name") or result["account_id"],
         "as_of": result["as_of"],
-        "score": a["score"], "band": a["band"], "abstained": a["abstained"],
+        "score": a["score"], "band": a["band"], "abstained": a["abstained"], "mode": a.get("mode", "ai"),
+        "coverage": result.get("coverage") or {},
         "drivers": a["drivers"], "rationale": a["rationale"],
         "recommended_actions": a.get("recommended_actions", []),
         "citations": a["citations"], "signals": signals, "gaps": gaps,
@@ -191,14 +192,16 @@ class RiskService:
                                 row["error"] = error
 
         for row in rows:
-            if row["assessment"]:
+            if (row["assessment"] or {}).get("abstained") or (row.get("screen") and not row["screen"]["coverage"]["enough"]):
+                row["band"], row["score"], row["band_source"] = None, None, "not_enough_data"
+            elif row["assessment"]:
                 row["band"], row["score"], row["band_source"] = row["assessment"]["band"], row["assessment"]["score"], "assessment"
             elif row.get("screen"):
                 row["band"], row["score"], row["band_source"] = screen_band(row["screen"]), None, "screen"
             else:
                 row["band"], row["score"], row["band_source"] = None, None, "error"
         minimum = {"any": 0, "medium_or_high": 1, "high": 2}.get(band_filter, 0)
-        shown = [r for r in rows if r["band"] and BAND_ORDER[r["band"]] >= minimum]
+        shown = [r for r in rows if (r["band"] and BAND_ORDER[r["band"]] >= minimum) or (not minimum and r["band_source"] == "not_enough_data")]
         shown.sort(key=lambda r: (-BAND_ORDER.get(r["band"], -1), -(r["score"] or 0), r["close_date"]))
         return {
             "label": label or f"{start} to {end}", "window_start": start.isoformat(), "window_end": end.isoformat(),
@@ -211,7 +214,7 @@ class RiskService:
 
     def ask(self, principal: Principal, question: str) -> dict:
         try:
-            intent, params = nlquery.parse_intent(question, llm=self.engine.llm)
+            intent, params = nlquery.parse_intent(question, llm=self.engine.llm if self.engine.ai_enabled() else None)
         except nlquery.IntentParseError as exc:
             return {"type": "help", "message": str(exc)}
         except LLMError as exc:

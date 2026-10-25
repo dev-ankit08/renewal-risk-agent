@@ -5,6 +5,9 @@
 pack: saas                  # saas | it_services
 
 llm:
+  # auto = AI when a real ANTHROPIC_API_KEY is set, otherwise rules-only answers (free: the signals are
+  # scored and your playbook actions recommended, no model call); ai | rules force one or the other.
+  mode: auto
   coordinator_model: claude-opus-5-5
   specialist_model: claude-sonnet-5-5
   synthesis_model: claude-opus-5-5
@@ -53,6 +56,19 @@ policy:
   # connectors.yaml are exempt.
   zdr_confirmed: false
   max_records_per_entity: 200   # per account per entity, sent to a specialist
+
+# Rules-only scoring (and the backtest's starting point). Accuracy > Apply suggested weights writes here.
+rules:
+  weights: {high: 35, medium: 15, low: 5}   # points per fired warning sign, capped at 100
+  thresholds: {high: 70, medium: 40}        # score at or above -> band
+  min_coverage: 0.4                          # below this share of warning signs checked, nothing fired = "Not enough data"
+
+# Backtest: how a closed renewal's outcome is read from the CRM (an uploaded outcomes.csv wins).
+backtest:
+  lead_days: 90                              # replay each renewal as it looked this many days before close
+  lost_stages: [lost, cancel, churn]         # stage contains any of these -> churned
+  won_stages: [won]                          # stage contains any of these -> renewed (or downgraded, below)
+  downgrade_pct: 5                           # won but this % or more below the prior amount / contract ARR -> downgraded
 
 bulk:
   max_deep_assessments: 10      # paid full assessments per bulk question

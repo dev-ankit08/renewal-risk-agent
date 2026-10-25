@@ -18,7 +18,43 @@ Run `renewal-risk serve` (or the Docker image) and open `http://<host>:8080/admi
 | 3 | Account matching | Shows the share of accounts each system matched. Choose the match rules, then click **Match** or **Not a match** on each suggested match. |
 | 4 | Signals & playbooks | Switch signals on or off, set thresholds, and write your approved actions. |
 | 5 | Access & Slack | Add people (by their Slack email) with a role and scope, create API keys, paste the Slack tokens, and send a test message. |
-| 6 | Health & feedback | Shows what is still missing, connection status, cost, and recent assessments. Mark each assessment agree/disagree and record the real renewal outcome; these feed the evaluation. |
+| 6 | Health & feedback | Shows what is still missing, connection status, cost, and recent assessments. Mark each assessment agree/disagree and record the real renewal outcome. |
+| 7 | Accuracy | Replays renewals that already closed and shows how many losses the agent would have caught (section 6). |
+
+### Quick start: the setup checklist and sample data
+
+**Data sources** opens with a **setup checklist**. It shows what is left before
+people get answers, each step with a **Go** link to its screen, and "Setup 5/8"
+in the sidebar until you're done:
+
+1. connect your systems;
+2. sign in and test every connection;
+3. map the required fields;
+4. match accounts across systems (80% or more);
+5. at least 5 warning signs have data;
+6. give people access;
+7. connect Slack;
+8. ask your first question.
+
+It only reads what is already known, and never tests a connection itself.
+
+**Auto-map all fields** (on the checklist and on Field mapping) runs the
+mapping suggestions for every source at once. It saves only the confident ones,
+and only for fields not mapped yet. Everything else is listed for review.
+
+**Try with sample data** opens a separate **demo workspace**: the built-in demo
+accounts, with history, dated relative to today.
+
+- **Your real setup is never changed.** Only the configuration folder switches,
+  to `<state>/workspaces/demo/`.
+- **You stay signed in,** and the people in your `access.yaml` can ask about the
+  demo accounts in Slack too.
+- **A yellow banner** shows while you're in the demo. **Switch back to your real
+  setup** returns you, and the service forgets what the demo recorded.
+- **The service remembers which workspace was active** across restarts. In
+  Docker the sample data ships in the image (`RENEWAL_RISK_DEMO_DIR`).
+
+![Setup checklist](screenshots/24-setup-checklist.png)
 
 **Where credentials go:** secrets typed into the UI are stored encrypted in
 `<state dir>/secrets.sqlite`. The config files only hold references such as
@@ -42,6 +78,7 @@ one-click sign-in; the flow stays the same.
 | `agent.yaml` | models, policy, schedule, limits (merged over [defaults](../renewal_risk/defaults/agent.yaml)) | no |
 | `signals.yaml` | signal thresholds (merged over [defaults](../renewal_risk/defaults/signals.yaml) by name) | no |
 | `playbooks.yaml` | your approved actions per signal | no |
+| `sections.yaml` | your own data sections: a new data type and its specialist | no |
 | `links.csv` | approved and rejected account matches (written by `link --review`) | no |
 | `presets/*.yaml` | your own presets, which extend the catalog | no |
 
@@ -149,6 +186,75 @@ agent maps onto them.
 Every entity also has `id`, `created_at` and `updated_at`. A field that is not
 in this table is dropped when records are read. **There is no free-text field
 at all.** Descriptions, comments and ticket bodies cannot reach the model.
+
+### Your own data sections
+
+The industry pack gives you fixed sections ("Customers & renewals", "Billing &
+payments", …). When renewal risk shows up in data that fits none of them, such
+as survey answers, product feedback or health checks, add a section of your own.
+On **Data sources**, click **+ Add section**:
+
+1. **Name it and describe the data.** Give the data type a name (one record is
+   one `survey`). Then list its fields, each with a type and a plain-English
+   meaning. The meaning is what the AI field mapping matches source fields
+   against.
+   - To start the list quickly, pick a CSV file (its header becomes the fields)
+     or a Salesforce object (its fields are read for you).
+   - `id`, `account_id`, `created_at` and `updated_at` are added automatically.
+   - Free-text fields (comments, notes…) are refused, as everywhere else: they
+     never reach the AI.
+2. **Choose the "when did it happen" date.** The agent uses it to stay on the
+   assessment date and to audit that no future-dated data was used.
+3. **Tell its specialist what to look for,** e.g. *"judge whether the customer
+   is unhappy from their survey scores and trend"*. The section gets its own
+   specialist. With AI on, it reads the section's records and reports
+   alongside the built-in ones. In rules-only mode, its warning signs are
+   scored like any other.
+
+![Add a data section](screenshots/20-add-section.png)
+
+Then, on the section's card:
+
+- **+ Connect a system:**
+  - **Salesforce object** (any standard or custom object, e.g. `Survey__c`,
+    through your existing Salesforce connection; pick the field that points to
+    the account).
+  - **CSV / Excel upload.**
+  - **Database (SQL):** one read-only `SELECT` filtered by `:link_value`.
+  - **REST API:** one GET per account, with `{link_value}` in the path or
+    parameters.
+  - **MCP server:** one tool call per account, with `{link_value}` in the
+    arguments.
+
+  Credentials (DSN, tokens, MCP environment values) are stored encrypted, never
+  in YAML. You then land on **Field mapping** for the new data type.
+- **+ Add warning sign** opens the signal builder already set to this section's
+  data type and specialist.
+- **Edit** changes the fields and the specialist's focus. The key and data type
+  name are fixed once saved.
+- **Delete** removes the section, its connections, and any source made only
+  for it. It is refused while a custom signal still uses the section.
+
+![A custom section on Data sources](screenshots/21-custom-section-card.png)
+
+![Connect with a REST API](screenshots/22-connect-rest.png) ![Connect with an MCP server](screenshots/23-connect-mcp.png)
+
+In YAML (`config/sections.yaml`):
+
+```yaml
+sections:
+  - key: customer_surveys                 # also the specialist's name
+    label: Customer surveys
+    description: NPS answers from our survey tool.
+    data_type:
+      name: survey
+      description: One survey answer from a customer contact.
+      date_field: responded_at
+      fields:
+        - {name: score, type: num, description: "Likelihood to recommend, 0-10"}
+        - {name: responded_at, type: date, description: When the customer answered}
+    focus: Judge whether the customer is unhappy from their survey scores and trend.
+```
 
 ## 2. Map fields (only where you differ)
 
@@ -289,8 +395,8 @@ Users can then:
   `/renewal-risk high risk renewals next 90 days`;
 * write `@Renewal Risk why is Globex high risk?` in a channel (the answer goes in
   a thread), or send the bot a DM;
-* press the buttons on an answer: **View evidence** opens every signal with its
-  cited record, and **Re-run now** runs a fresh assessment.
+* press the buttons on an answer: **See full details** opens every signal with
+  how it's calculated and its source record, and **Refresh** runs a fresh assessment.
 
 A single-account answer shows the risk band, the score, why, the top drivers,
 the recommended actions, and which systems the evidence came from.
@@ -314,7 +420,7 @@ its definition, for example:
 > Counts tickets that are open. Medium at 2 or more, high at 3 or more.
 
 The same sentence appears on the admin screen, under each signal in Slack's
-**View evidence** dialog, in action DMs, on the Ask page and in briefs. Nobody
+**See full details** view, in action DMs, on the Ask page and in briefs. Nobody
 has to guess what a number means.
 
 **Add your own signal.** Click **+ New signal** (or **Duplicate** on a
@@ -422,6 +528,63 @@ Safety rules:
 **Owners & notifications** shows the DM settings and every action sent, with
 its status. **Health** shows how many actions are open, done and overdue, and
 the completion rate.
+
+**"Not enough data" instead of "Low risk".** A warning sign only counts as
+*checked* when the account has at least one record of the data it reads. For
+example, "0 open tickets" says nothing about an account with no tickets at all,
+perhaps because it isn't linked. Every answer says **"Checked X of Y warning
+signs"**. When nothing fired and less than `rules.min_coverage` (default 40%)
+could be checked, the verdict is **"Not enough data"**, never "Low risk".
+
+- This applies in AI mode too.
+- Such accounts get no alerts and no action DMs.
+- The details view lists exactly what couldn't be checked and why.
+
+**Accuracy: how often is it right?** The **Accuracy** screen replays renewals
+that already closed:
+
+- **Only the data that existed then is used.** Each renewal is judged as it
+  looked a set number of days before it closed (default 90).
+- **The answer can't leak in.** The renewal is put back to "open" with its
+  final stage and amount removed.
+- **The call is compared with what happened:**
+  - **Churned:** the stage contains "lost", "cancel" or "churn".
+  - **Downgraded:** won, but 5% or more below the previous amount or contract
+    ARR.
+  - **Renewed:** won otherwise.
+
+  These rules are set in `agent.yaml` under `backtest:`.
+- **Correcting outcomes:** an uploaded `outcomes.csv` (`account_id, close_date,
+  outcome`) overrides the CRM.
+
+You get:
+
+- How many losses were caught, missed and falsely flagged.
+- A comparison with a naive "biggest deals first" list.
+- The accuracy of each warning sign, with weak ones flagged for review.
+- Suggested scoring weights, which **Apply** writes to `agent.yaml` (versioned).
+
+Signals that read a field holding only today's value (status, stage,
+open/closed…) are marked *approximate*. No AI is used, so it's free to run.
+
+![Accuracy](screenshots/25-accuracy.png)
+
+Scoring for rules-only answers and the backtest (`agent.yaml`):
+
+```yaml
+rules:
+  weights: {high: 35, medium: 15, low: 5}   # points per fired warning sign, capped at 100
+  thresholds: {high: 70, medium: 40}        # score at or above -> band
+  min_coverage: 0.4                          # below this, nothing fired = "Not enough data"
+```
+
+**Without an AI key (rules-only mode).** With no real `ANTHROPIC_API_KEY`, or
+with `llm.mode: rules` in `agent.yaml`, every answer is computed without a model
+call. The fired signals are scored (high 35, medium 15, low 5 points, capped at
+100), and the plays whose signals fired are recommended. Slack, evidence, "how
+it's calculated" and action DMs work the same, and answers are labelled
+*rules-only (AI off)*. No data leaves the service, so the data-retention check
+does not apply. Add a key, or set `llm.mode: ai`, to get the AI write-up.
 
 **Schedule** (`agent.yaml`):
 

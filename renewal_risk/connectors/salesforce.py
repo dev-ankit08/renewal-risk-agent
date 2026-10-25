@@ -139,16 +139,20 @@ class SoqlConnector(Connector):
                     out.append(obj)
         return out
 
+    def object_fields(self, obj: str) -> dict[str, dict]:
+        """{api name: {label, type, description}} for one object, e.g. Survey__c."""
+        rows = self.run_soql(
+            "SELECT QualifiedApiName, Label, DataType, Description FROM FieldDefinition "
+            f"WHERE EntityDefinition.QualifiedApiName = '{_soql_value(obj)}'"
+        )
+        return {r["QualifiedApiName"]: {"label": r.get("Label"), "type": r.get("DataType"), "description": r.get("Description")} for r in rows}
+
     def field_metadata(self, entity: str) -> dict[str, dict]:
-        """Labels, types and admin-written descriptions from FieldDefinition."""
+        """Labels, types and admin-written descriptions of the entity's objects."""
         out: dict[str, dict] = {}
         for obj in self.objects_for(entity):
-            rows = self.run_soql(
-                "SELECT QualifiedApiName, Label, DataType, Description FROM FieldDefinition "
-                f"WHERE EntityDefinition.QualifiedApiName = '{_soql_value(obj)}'"
-            )
-            for r in rows:
-                out.setdefault(r["QualifiedApiName"], {"label": r.get("Label"), "type": r.get("DataType"), "description": r.get("Description")})
+            for name, info in self.object_fields(obj).items():
+                out.setdefault(name, info)
         return out
 
     def health(self) -> HealthResult:

@@ -8,10 +8,11 @@ from ..core.settings import Settings, load_packs, load_presets
 
 GENERIC = [
     {"type": "csv", "label": "CSV / Excel upload", "description": "Upload exports from any system; map columns on the next screen."},
-    {"type": "rest", "label": "Other REST API", "description": "Any JSON API — configured in connectors.yaml (see docs/ADMIN_GUIDE.md)."},
-    {"type": "sql", "label": "Database (SQL)", "description": "Postgres, MySQL, SQL Server, Snowflake... — configured in connectors.yaml."},
-    {"type": "mcp", "label": "MCP server", "description": "Any system with an MCP server — configured in connectors.yaml."},
+    {"type": "sql", "label": "Database (SQL)", "description": "Postgres, MySQL, SQL Server, Snowflake… — a read-only SELECT per account."},
+    {"type": "rest", "label": "REST API", "description": "Any JSON API — one GET per account."},
+    {"type": "mcp", "label": "MCP server", "description": "Any system with an MCP server — one tool call per account."},
 ]
+SALESFORCE_TYPES = ("salesforce", "salesforce_rest")
 
 
 def preset_entities(preset: dict) -> list[str]:
@@ -38,7 +39,13 @@ def catalog(settings: Settings, callback_url: str) -> dict:
     pack = settings.pack
     configured = {name: src for name, src in settings.sources.items()}
     categories = []
+    salesforce = [n for n, src in configured.items() if src.get("type") in SALESFORCE_TYPES]
     for cat in pack.get("categories") or []:
+        filled_by = [n for n, src in configured.items() if cat["entities"][0] in (src.get("entities") or {})]
+        if cat.get("custom"):  # an admin-defined section: generic connectors or an object in a Salesforce org
+            categories.append({**{k: cat.get(k) for k in ("key", "label", "description", "entities", "section")}, "required": False,
+                               "custom": True, "systems": [], "configured_sources": filled_by})
+            continue
         # The first entity leads: a system belongs to a category only if it has that
         # (Stripe has contracts, but it is not where your customer list lives).
         lead, wanted = cat["entities"][0], set(cat["entities"])
@@ -49,7 +56,6 @@ def catalog(settings: Settings, callback_url: str) -> dict:
                 systems.append({"preset": name, "label": preset.get("label", name), "description": preset.get("description", ""),
                                 "provides": provides, "setup_notes": preset.get("setup_notes", ""),
                                 "auth_methods": public_auth_methods(preset, callback_url)})
-        filled_by = [n for n, src in configured.items() if lead in (src.get("entities") or {})]
         categories.append({**{k: cat.get(k) for k in ("key", "label", "description", "entities", "required")},
                            "systems": systems, "configured_sources": filled_by})
     return {
@@ -57,5 +63,6 @@ def catalog(settings: Settings, callback_url: str) -> dict:
         "packs": [{"name": n, "label": p.get("label", n), "description": p.get("description", "")} for n, p in load_packs().items()],
         "categories": categories,
         "generic": GENERIC,
+        "salesforce_sources": salesforce,  # connections a custom section can read an object from
         "callback_url": callback_url,
     }

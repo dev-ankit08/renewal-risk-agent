@@ -211,26 +211,54 @@ def _parse(spec: str) -> dict:
 
 ENTITIES: dict[str, dict] = {}
 FIELD_DOCS: dict[str, dict[str, dict]] = {}
-for _name, _spec in _SPECS.items():
-    _raw = {"id": _COMMON["id"]}
-    if _name not in ("account", "customer"):
-        _raw.update(_ACCOUNT_LINK)
-    _raw.update(_spec["fields"])
-    _raw["created_at"] = _COMMON["created_at"]
-    if _name != "customer":
-        _raw["updated_at"] = _COMMON["updated_at"]
-    FIELD_DOCS[_name] = {f: _parse(s) for f, s in _raw.items()}
-    ENTITIES[_name] = {
-        "description": _spec["description"],
-        "fields": {f: d["type"] for f, d in FIELD_DOCS[_name].items()},
-        "allow_key_fields": _spec.get("allow_key_fields", False),
+
+
+def _add(name: str, spec: dict) -> None:
+    raw = {"id": _COMMON["id"]}
+    if name not in ("account", "customer"):
+        raw.update(_ACCOUNT_LINK)
+    raw.update(spec["fields"])
+    raw["created_at"] = _COMMON["created_at"]
+    if name != "customer":
+        raw["updated_at"] = _COMMON["updated_at"]
+    FIELD_DOCS[name] = {f: _parse(s) for f, s in raw.items()}
+    ENTITIES[name] = {
+        "description": spec["description"],
+        "fields": {f: d["type"] for f, d in FIELD_DOCS[name].items()},
+        "allow_key_fields": spec.get("allow_key_fields", False),
     }
+
+
+for _name, _spec in _SPECS.items():
+    _add(_name, _spec)
+BUILT_IN = frozenset(ENTITIES)
+_custom_dates: set[str] = set()
+
+
+def register_entities(custom: dict[str, dict]) -> None:
+    """Replace the admin-defined data types (config/sections.yaml):
+    {name: {description, fields: {field: "type | description"}, date_field}}.
+    Every reader holds ENTITIES / FIELD_DOCS by reference, so they are changed
+    in place. Process-wide: one company configuration per process."""
+    for name in [n for n in ENTITIES if n not in BUILT_IN]:
+        ENTITIES.pop(name)
+        FIELD_DOCS.pop(name)
+    _custom_dates.clear()
+    for name, spec in custom.items():
+        _add(name, spec)
+        if spec.get("date_field"):
+            _custom_dates.add(spec["date_field"])
 
 # Fields that record when something was actually observed. The leakage audit
 # checks these against as_of. Forward-looking dates (close_date, due_date,
 # end_date, planned_end) are deliberately absent: a renewal's close date is
 # *expected* to be after as_of.
 OBSERVED_DATE_FIELDS = ("created_at", "updated_at", "activity_date", "opened_at", "paid_at", "period_start", "work_date")
+
+
+def observed_date_fields() -> tuple[str, ...]:
+    """The built-in observed dates plus each custom data type's "when it happened" field."""
+    return OBSERVED_DATE_FIELDS + tuple(sorted(_custom_dates - set(OBSERVED_DATE_FIELDS)))
 
 # The field a record is as-of-filtered on when a source cannot filter itself.
 AS_OF_FIELD = "created_at"

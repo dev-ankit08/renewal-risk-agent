@@ -121,3 +121,23 @@ def ctx(demo_config):
     yield context
     context.engine.close()
     set_context(None)
+
+
+@pytest.fixture()
+def admin(ctx):
+    """A signed-in admin client on the CSV demo config."""
+    pytest.importorskip("httpx")
+    from fastapi.testclient import TestClient
+
+    from renewal_risk.admin.api import secret_store_for
+    from renewal_risk.admin.auth import setup_token
+    from renewal_risk.service.api import app
+
+    client = TestClient(app)
+    status = client.get("/admin/api/status").json()
+    assert status["needs_setup"] is True
+    token = setup_token(secret_store_for(ctx), ctx.store)
+    assert client.post("/admin/api/setup", json={"setup_token": "wrong", "email": "a@x.com", "password": "long-enough-pw"}).status_code == 403
+    r = client.post("/admin/api/setup", json={"setup_token": token, "email": "Admin@Demo.example", "password": "long-enough-pw", "pack": "saas"})
+    assert r.status_code == 200 and "rr_admin" in r.cookies
+    return client

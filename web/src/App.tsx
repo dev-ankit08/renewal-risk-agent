@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import { api, ApiError, Status } from "./api";
+import { switchWorkspace, useChecklist } from "./Checklist";
 import { go, useHashRoute } from "./ui";
 import AccessPage from "./pages/Access";
 import HealthPage from "./pages/Health";
@@ -9,6 +10,8 @@ import SetupPage, { LoginPage } from "./pages/Setup";
 import SignalsPage from "./pages/Signals";
 import SourcesPage from "./pages/Sources";
 
+const AccuracyPage = lazy(() => import("./pages/Accuracy"));
+
 const NAV = [
   ["sources", "Data sources"],
   ["mapping", "Field mapping"],
@@ -16,7 +19,19 @@ const NAV = [
   ["signals", "Signals & playbooks"],
   ["access", "Access & Slack"],
   ["health", "Health & feedback"],
+  ["accuracy", "Accuracy"],
 ];
+
+function SetupProgress() {
+  const list = useChecklist();
+  if (!list.data || list.data.done === list.data.total) return null;
+  return (
+    <a href="#/sources" className="progress" title="What is left to set up">
+      Setup {list.data.done}/{list.data.total}
+      <div className="meter"><span style={{ width: `${(100 * list.data.done) / list.data.total}%` }} /></div>
+    </a>
+  );
+}
 
 export default function App() {
   const [status, setStatus] = useState<Status | null>(null);
@@ -48,6 +63,7 @@ export default function App() {
       <aside className="side">
         <h1>Renewal Risk</h1>
         <div className="pack">{packLabel}</div>
+        <SetupProgress />
         <nav>
           {NAV.map(([key, text], i) => (
             <a key={key} href={`#/${key}`} className={page === key ? "active" : ""}>
@@ -66,12 +82,20 @@ export default function App() {
         </div>
       </aside>
       <main>
+        {status.workspace.active === "demo" && (
+          <div className="notice warn row">
+            <span><strong>Demo workspace</strong> — sample data. Your real setup is untouched.</span>
+            <span className="spacer" />
+            <button onClick={() => switchWorkspace("home")}>Switch back to your real setup</button>
+          </div>
+        )}
         {page === "sources" && <SourcesPage params={params} status={status} onPackChange={refresh} />}
         {page === "mapping" && <MappingPage route={route} />}
         {page === "matching" && <MatchingPage />}
-        {page === "signals" && <SignalsPage />}
+        {page === "signals" && <SignalsPage params={params} />}
         {page === "access" && <AccessPage />}
         {page === "health" && <HealthPage />}
+        {page === "accuracy" && <Suspense fallback={null}><AccuracyPage /></Suspense>}
         {!NAV.some(([k]) => k === page) && (
           <p>
             Unknown page. <a href="#/sources" onClick={() => go("sources")}>Go to data sources</a>

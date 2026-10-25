@@ -54,6 +54,8 @@ def scan(ctx: AppContext, notifier=None, dry_run: bool = False) -> dict:
         summary["cost_usd"] += result.cost_usd
         view = assessment_view(result.to_dict()) if dry_run else ctx.service.after_assessment(result, getattr(notifier, "_dm", None))
         band = result.assessment["band"]
+        if result.assessment["abstained"]:
+            continue  # not enough data to judge: never alert on it
         previous = ctx.store.previous_band(account_id, before=started)
         last_alert = ctx.store.last_alert(account_id)
         if BAND_ORDER[band] < BAND_ORDER[min_band]:
@@ -82,7 +84,8 @@ def start_background(ctx: AppContext, notifier=None):
 
     def job():
         try:
-            result = scan(ctx, notifier)
+            from .context import get_context
+            result = scan(get_context(), notifier)  # the live configuration, not the one at start-up
             print(f"scheduled scan: {result['screened']} screened, {result['assessed']} assessed, "
                   f"{len(result['alerts'])} alert(s), ${result['cost_usd']}", file=sys.stderr)
         except Exception as exc:  # noqa: BLE001 - never kill the scheduler thread

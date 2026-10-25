@@ -44,6 +44,16 @@ any MCP server ──────────────────┘        
   Any citation the model invents is dropped. Actions name an owner, a priority,
   a due date and why they were recommended. Each action is DM'd on Slack to the
   person who owns it, with Done / Snooze / Not relevant buttons.
+* **Proven, and honest about gaps.** The Accuracy screen replays renewals that
+  already closed, using only the data that existed 90 days before, and shows how
+  many losses the agent would have caught compared with a "biggest deals first"
+  list. Every answer says how many warning signs it could actually check, and
+  says "Not enough data" rather than "Low risk" when it couldn't.
+* **Set up in minutes.** A setup checklist, one-click auto-mapping, and a demo
+  workspace with sample data that leaves your real setup untouched.
+* **Your own data sections.** Bring in data no pack covers (surveys, product
+  feedback, health checks) from a Salesforce object, a CSV, SQL, a REST API or
+  an MCP server. Describe its fields and the section gets its own specialist.
 * **Your own signals and playbook, no code.** Admins describe a warning sign in
   plain English. AI drafts it, the admin tests it on real accounts and saves it.
   The playbook records the company's approved actions, steps and runbook links.

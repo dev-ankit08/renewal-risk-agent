@@ -18,7 +18,7 @@ import hashlib
 import sys
 
 from ..access.rbac import can_view
-from ..core.playbooks import SEVERITY_RANK
+from ..core.playbooks import severity_reached
 from .risk_service import BAND_ORDER
 
 
@@ -48,18 +48,13 @@ def action_key(action: dict) -> str:
     return "ai:" + hashlib.sha1(words.encode()).hexdigest()[:12]
 
 
-def _severity_reached(play: dict, view: dict) -> bool:
-    fired = [SEVERITY_RANK.get(s["severity"], 0) for s in view.get("signals", []) if s["name"] in play.get("signals", [])]
-    return max(fired, default=0) >= SEVERITY_RANK.get(play.get("min_severity", "any"), 0)
-
-
 def notify(ctx, view: dict, account: dict, send=None) -> list[dict]:
     """DM the owners of `view`'s recommended actions. `send(email, text, blocks)`
     defaults to the Slack notifier; returns what was sent."""
     from ..slack import blocks as kit
 
     cfg = {"dm_owners": True, "min_band": "high", "cooldown_days": 30, **((ctx.settings.slack or {}).get("actions") or {})}
-    if not cfg["dm_owners"] or BAND_ORDER.get(view.get("band"), 0) < BAND_ORDER.get(cfg["min_band"], 2):
+    if not cfg["dm_owners"] or view.get("abstained") or BAND_ORDER.get(view.get("band"), 0) < BAND_ORDER.get(cfg["min_band"], 2):
         return []
     if send is None:
         if not (ctx.settings.slack or {}).get("bot_token"):
@@ -70,7 +65,7 @@ def notify(ctx, view: dict, account: dict, send=None) -> list[dict]:
     sent = []
     for action in view.get("recommended_actions", []):
         play = plays.get(action.get("playbook_id") or "")
-        if play and (not play.get("notify", True) or not _severity_reached(play, view)):
+        if play and (not play.get("notify", True) or not severity_reached(play, view.get("signals", []))):
             continue
         key = action_key(action)
         for email in owner_emails(ctx, action.get("owner_role", ""), account):

@@ -60,6 +60,12 @@ class AnthropicLLM:
                 self._client = anthropic.Anthropic(max_retries=3)
             return self._client
 
+    @property
+    def configured(self) -> bool:
+        """A usable credential is set (the `.env.example` placeholder `sk-ant-...` is not)."""
+        key = os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN") or ""
+        return len(key) >= 40 and "..." not in key
+
     def model_for(self, role: str) -> str:
         key = {"coordinator": "coordinator_model", "synthesis": "synthesis_model"}.get(role, "specialist_model")
         return self.cfg[key]

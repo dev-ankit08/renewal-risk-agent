@@ -35,6 +35,9 @@ import yaml
 from dotenv import load_dotenv
 
 from .playbooks import normalize as normalize_playbooks
+from .sections import apply as apply_sections
+from .sections import normalize as normalize_sections
+from .sections import reserved_names as reserved_section_names
 
 load_dotenv()  # .env in the working directory, never overrides real env vars
 
@@ -239,13 +242,15 @@ class Settings:
     access: dict
     slack: dict
     pack: dict = field(default_factory=dict)
+    sections: list[dict] = field(default_factory=list)  # admin-defined data sections (sections.yaml)
+    state_root: Path | None = None  # set for the demo workspace: share the home state folder
     tenant_id: str = "default"
     problems: list[str] = field(default_factory=list)
     missing_env: set[str] = field(default_factory=set)
 
     @property
     def state_dir(self) -> Path:
-        return state_dir(self.dir)
+        return self.state_root or state_dir(self.dir)
 
 
 def load_packs() -> dict[str, dict]:
@@ -280,23 +285,26 @@ def _load_signals(cfg_dir: Path, pack: dict) -> list[dict]:
     return [s for s in signal_catalog(cfg_dir, pack) if s.get("enabled", True)]
 
 
-def _secret_lookup(cfg_dir: Path, tenant_id: str):
+def _secret_lookup(state: Path, tenant_id: str):
     """Lazily opens the secret store only when a ${SECRET:...} is actually used."""
     cache: dict = {}
 
     def lookup(key: str):
         if "store" not in cache:
             from ..auth.secrets import default_store
-            cache["store"] = default_store(state_dir(cfg_dir), tenant_id)
+            cache["store"] = default_store(state, tenant_id)
         return cache["store"].get(key)
     return lookup
 
 
-def load_settings(cfg_dir: Path | str | None = None, tenant_id: str = "default") -> Settings:
+def load_settings(cfg_dir: Path | str | None = None, tenant_id: str = "default", state_root: Path | None = None) -> Settings:
+    """`state_root` lets a second config folder (the demo workspace) share the
+    home state — admin sign-in, secrets and the store — instead of its own."""
     cfg_dir = Path(cfg_dir).resolve() if cfg_dir else config_dir()
+    state = state_root or state_dir(cfg_dir)
     problems: list[str] = []
     missing_env: set[str] = set()
-    secrets = _secret_lookup(cfg_dir, tenant_id)
+    secrets = _secret_lookup(state, tenant_id)
 
     user_agent = _interpolate_env(read_yaml(cfg_dir / "agent.yaml"), missing_env, secrets)
     defaults_agent = read_yaml(DEFAULTS_DIR / "agent.yaml")
@@ -309,6 +317,8 @@ def load_settings(cfg_dir: Path | str | None = None, tenant_id: str = "default")
     agent = deep_merge(deep_merge(defaults_agent, pack.get("agent") or {}), user_agent)
     if pack.get("specialists"):  # a pack replaces the specialist set; the company's agent.yaml can still override
         agent["specialists"] = deep_merge(pack["specialists"], user_agent.get("specialists") or {})
+    sections = normalize_sections(read_yaml(cfg_dir / "sections.yaml"), reserved_section_names(agent, pack), problems)
+    apply_sections(sections, agent, pack)  # before sources resolve: they may provide the new data types
 
     connectors = read_yaml(cfg_dir / "connectors.yaml")
     if not connectors:
@@ -322,7 +332,7 @@ def load_settings(cfg_dir: Path | str | None = None, tenant_id: str = "default")
         problems.extend(source_problems)
         if resolved:
             resolved["_config_dir"] = str(cfg_dir)
-            resolved["_state_dir"] = str(state_dir(cfg_dir))
+            resolved["_state_dir"] = str(state)
             resolved["_tenant_id"] = tenant_id
             sources[name] = resolved
 
@@ -348,6 +358,8 @@ def load_settings(cfg_dir: Path | str | None = None, tenant_id: str = "default")
         access=access,
         slack=slack,
         pack=pack,
+        sections=sections,
+        state_root=state_root,
         tenant_id=tenant_id,
         problems=problems,
         missing_env=missing_env,

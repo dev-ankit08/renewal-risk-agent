@@ -28,16 +28,18 @@ from ..auth import oauth
 from ..auth.secrets import default_store
 from ..core import model
 from ..core import playbooks as playbooks_mod
-from ..core import prompts
+from ..core import backtest, prompts
+from ..core import sections as sections_mod
 from ..core import signals as signals_mod
 from ..core.connector import ConnectorError
 from ..core.llm import LLMError
 from ..core.settings import all_signals, load_packs, load_presets, signal_catalog
 from ..core.validate import validate_settings
+from ..service import workspace
 from ..service.context import get_context, reload_context
 from . import auth, packs
 from .config_store import FileConfigStore
-from .mapping_agent import MappingAgent, inactive_signals
+from .mapping_agent import REQUIRED, MappingAgent, inactive_signals
 
 router = APIRouter(prefix="/admin/api", tags=["admin"])
 callback_router = APIRouter(tags=["admin"])
@@ -130,7 +132,8 @@ def status(request: Request) -> dict:
         "version": __version__, "needs_setup": ctx.store.admin_count() == 0,
         "pack": ctx.settings.pack.get("name"), "packs": [{"name": n, "label": p.get("label", n), "description": p.get("description", "")}
                                                           for n, p in load_packs().items()],
-        "callback_url": callback_url(request), "model_configured": bool(os.environ.get("ANTHROPIC_API_KEY")),
+        "callback_url": callback_url(request), "model_configured": ctx.engine.ai_enabled(),
+        "workspace": workspace.status(ctx),
     }
 
 
@@ -428,6 +431,214 @@ def set_primary(body: PrimaryBody, admin: str = Depends(auth.current_admin)) -> 
 
 
 # ---------------------------------------------------------------------------
+# custom sections (sections.yaml): a new data type + its own specialist
+# ---------------------------------------------------------------------------
+
+_SF_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,79}$")
+
+
+def _section(ctx, key: str) -> dict:
+    found = next((x for x in ctx.settings.sections if x["key"] == key), None)
+    if found is None:
+        raise HTTPException(404, f"no custom section '{key}'")
+    return found
+
+
+def _built_in_names(ctx) -> set[str]:
+    return sections_mod.reserved_names(ctx.settings.agent, ctx.settings.pack, ctx.settings.sections)
+
+
+class SectionBody(BaseModel):
+    label: str
+    description: str = ""
+    data_type: dict
+    focus: str
+
+
+@router.put("/sections/{key}")
+def save_section(key: str, body: SectionBody, admin: str = Depends(auth.current_admin)) -> dict:
+    ctx = get_context()
+    store = config_store(ctx)
+    current = next((x for x in ctx.settings.sections if x["key"] == key), None)
+    if current and current["data_type"]["name"] != body.data_type.get("name"):
+        raise HTTPException(400, "the data type name cannot change once created (connections and signals use it)")
+
+    def change():
+        doc = store.read("sections.yaml")
+        items = [x for x in doc.get("sections") or [] if x.get("key") != key] + [{"key": key, **body.model_dump()}]
+        try:
+            doc["sections"] = sections_mod.normalize({"sections": items}, _built_in_names(ctx))
+        except sections_mod.SectionError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        store.write("sections.yaml", doc, admin)
+    return _apply(change)
+
+
+@router.delete("/sections/{key}")
+def delete_section(key: str, admin: str = Depends(auth.current_admin)) -> dict:
+    """Remove a section, its data type's connections, and the sources made only for it."""
+    ctx = get_context()
+    section = _section(ctx, key)
+    entity = section["data_type"]["name"]
+    users = [x["name"] for x in _catalog(ctx) if x.get("origin") == "custom"
+             and (x.get("specialist") == key or entity in signals_mod.required_entities(x))]
+    if users:
+        raise HTTPException(409, f"delete the signals that use this section first: {', '.join(users)}")
+    store, sstore = config_store(ctx), secret_store_for(ctx)
+
+    def change():
+        doc = store.read("sections.yaml")
+        doc["sections"] = [x for x in doc.get("sections") or [] if x.get("key") != key]
+        store.write("sections.yaml", doc, admin)
+        conn = store.read("connectors.yaml")
+        for name, src in list((conn.get("sources") or {}).items()):
+            (src.get("entities") or {}).pop(entity, None)
+            if src.get("type") and src.get("section") == key and not src.get("entities"):
+                conn["sources"].pop(name)
+                sstore.delete_prefix(f"sources/{name}/")
+            overrides = store.read(f"mappings/{name}.overrides.yaml")
+            if overrides.pop(entity, None) is not None:
+                store.write(f"mappings/{name}.overrides.yaml", overrides, admin)
+        if conn.get("primary") not in (conn.get("sources") or {}):
+            conn["primary"] = next(iter(conn.get("sources") or {}), None)
+        store.write("connectors.yaml", conn, admin)
+    return _apply(change)
+
+
+@router.get("/sources/{name}/objects/{obj}/fields")
+def salesforce_object_fields(name: str, obj: str, admin: str = Depends(auth.current_admin)) -> dict:
+    """A Salesforce object's fields — to pick the account lookup and to start a data type."""
+    ctx = get_context()
+    if _source(ctx, name).get("type") not in packs.SALESFORCE_TYPES:
+        raise HTTPException(400, f"'{name}' is not a Salesforce connection")
+    if not _SF_NAME.match(obj):
+        raise HTTPException(400, "object names look like Account or Survey__c")
+    try:
+        fields = ctx.engine.pool.get(name).object_fields(obj)
+    except ConnectorError as exc:
+        raise HTTPException(502, f"Salesforce: {exc}") from exc
+    if not fields:
+        raise HTTPException(404, f"Salesforce has no object '{obj}' (check the API name, e.g. Survey__c)")
+    return {"object": obj, "fields": [{"name": k, **v} for k, v in sorted(fields.items())]}
+
+
+class ConnectBody(BaseModel):
+    kind: str                       # salesforce | sql | rest | mcp
+    source: str                     # salesforce: the existing connection; others: a new or existing source name
+    test_data: bool = False
+    object: str = ""                # salesforce
+    account_field: str = "AccountId"
+    dsn: str = ""                   # sql (secret)
+    query: str = ""
+    base_url: str = ""              # rest
+    auth_type: str = "none"         # none | bearer | header | query | basic
+    auth_name: str = ""             # header / query parameter name, or basic username
+    secret: str = ""                # token / password (secret)
+    path: str = ""
+    params: dict = {}
+    records_path: str = ""
+    command: str = ""               # mcp, stdio
+    args: list[str] = []
+    url: str = ""                   # mcp, streamable HTTP
+    env: dict = {}                  # mcp: {VAR: value} (secrets)
+    tool: str = ""
+    tool_args: dict = {}
+
+
+def _secret_ref(sstore, source: str, key: str, value: str) -> str | None:
+    """Store a credential encrypted; config files only ever hold the reference."""
+    if value:
+        sstore.set(f"sources/{source}/{key}", value.strip())
+    return f"${{SECRET:sources/{source}/{key}}}" if value or sstore.get(f"sources/{source}/{key}") else None
+
+
+def _generic_source(body: ConnectBody, sstore) -> tuple[dict, dict]:
+    """(connection settings, fetch request) for a new SQL / REST / MCP source."""
+    if body.kind == "sql":
+        from ..connectors.sql import check_read_only
+        try:
+            check_read_only(body.query)
+        except ConnectorError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        if ":link_value" not in body.query:
+            raise HTTPException(400, "the query must filter by the account with :link_value (e.g. WHERE account_id = :link_value)")
+        return {"dsn": _secret_ref(sstore, body.source, "dsn", body.dsn)}, {"query": body.query}
+    if body.kind == "rest":
+        if not body.base_url.startswith(("https://", "http://")) or not body.path.startswith("/"):
+            raise HTTPException(400, "give the API's base URL (https://…) and a path starting with /")
+        auth: dict = {"type": body.auth_type}
+        token = _secret_ref(sstore, body.source, "token", body.secret)
+        if body.auth_type == "bearer":
+            auth["token"] = token
+        elif body.auth_type in ("header", "query"):
+            auth.update(name=body.auth_name, value=token)
+        elif body.auth_type == "basic":
+            auth.update(username=body.auth_name, password=token)
+        elif body.auth_type != "none":
+            raise HTTPException(400, "auth must be none, bearer, header, query or basic")
+        request = {"path": body.path, "params": body.params or {}}
+        if body.records_path:
+            request["records_path"] = body.records_path
+        return {"connection": {"base_url": body.base_url.rstrip("/"), "auth": auth}}, {"request": request}
+    if body.kind == "mcp":
+        if not body.tool or not (body.command or body.url.startswith(("https://", "http://"))):
+            raise HTTPException(400, "give the MCP server (a command, or an https URL) and the tool to call")
+        env = {k: _secret_ref(sstore, body.source, f"env_{k}", str(v)) for k, v in (body.env or {}).items() if re.fullmatch(r"[A-Z][A-Z0-9_]*", k)}
+        server = {"url": body.url} if body.url else {"command": body.command, "args": body.args}
+        if env:
+            server["env"] = env
+        request = {"tool": body.tool, "args": body.tool_args or {}}
+        if body.records_path:
+            request["records_path"] = body.records_path
+        return {"server": server}, request
+    raise HTTPException(400, "connect with salesforce, sql, rest or mcp (CSV uses the upload)")
+
+
+@router.post("/sections/{key}/connect")
+def connect_section(key: str, body: ConnectBody, admin: str = Depends(auth.current_admin)) -> dict:
+    """Point a section's data type at a Salesforce object, a SQL query, a REST endpoint or an MCP tool."""
+    _check_name(body.source)
+    ctx = get_context()
+    entity = _section(ctx, key)["data_type"]["name"]
+    store, sstore = config_store(ctx), secret_store_for(ctx)
+
+    if body.kind == "salesforce":
+        if _source(ctx, body.source).get("type") not in packs.SALESFORCE_TYPES:
+            raise HTTPException(400, f"'{body.source}' is not a Salesforce connection")
+        if not (_SF_NAME.match(body.object) and _SF_NAME.match(body.account_field)):
+            raise HTTPException(400, "give the object (e.g. Survey__c) and the field that points to the account (e.g. Account__c)")
+        fname = f"mappings/{body.source}.overrides.yaml"
+
+        def change():  # the overrides file survives re-saving the connection
+            doc = store.read(fname)
+            block = doc.get(entity) or {}
+            block["fetch"] = {"object": body.object, "account_field": body.account_field}
+            block.setdefault("fields", {"id": "Id", "created_at": "CreatedDate | date"})
+            doc[entity] = block
+            store.write(fname, doc, admin)
+        return _apply(change)
+
+    connection, request = _generic_source(body, sstore)
+
+    def change():
+        doc = store.read("connectors.yaml")
+        sources = doc.setdefault("sources", {})
+        entry = sources.get(body.source) or {"type": body.kind, "section": key}
+        if entry.get("type") != body.kind:
+            raise HTTPException(400, f"'{body.source}' is already a {entry.get('preset') or entry.get('type')} source — choose another name")
+        entry.update({k: v for k, v in connection.items() if v})
+        entities = entry.setdefault("entities", {}) or {}
+        entities[entity] = {**(entities.get(entity) or {}), "fetch": request, "fields": (entities.get(entity) or {}).get("fields") or {"id": "id"}}
+        entry["entities"] = entities
+        if body.test_data:
+            entry["test_data"] = True
+        sources[body.source] = entry
+        doc.setdefault("primary", next(iter(sources)))
+        store.write("connectors.yaml", doc, admin)
+    return _apply(change)
+
+
+# ---------------------------------------------------------------------------
 # field mapping
 # ---------------------------------------------------------------------------
 
@@ -502,23 +713,58 @@ def preview_mapping(name: str, entity: str, body: FieldsBody, admin: str = Depen
 @router.put("/mapping/{name}/{entity}")
 def save_mapping(name: str, entity: str, body: FieldsBody, admin: str = Depends(auth.current_admin)) -> dict:
     ctx = get_context()
-    src = _source(ctx, name)
+    _source(ctx, name)
     unknown = [f for f in body.fields if model.field_type(entity, f) is None]
     if unknown:
         raise HTTPException(400, f"not standard {entity} fields: {', '.join(unknown)}")
     if "id" not in body.fields:
         raise HTTPException(400, "map at least the id field")
-    preset_fields = _current_fields(src, entity)
-    store = config_store(ctx)
-    fname = f"mappings/{name}.overrides.yaml"
+    return _apply(lambda: _write_mapping(ctx, name, entity, body.fields, admin))
+
+
+def _write_mapping(ctx, name: str, entity: str, fields: dict, admin: str) -> None:
+    """Write one data type's field mapping to the source's overrides file (versioned)."""
+    preset_fields = _current_fields(_source(ctx, name), entity)
+    store, fname = config_store(ctx), f"mappings/{name}.overrides.yaml"
+    doc = store.read(fname)
+    # Preset fields the admin removed are nulled so the override wins.
+    doc[entity] = {**(doc.get(entity) or {}), "fields": {**{f: None for f in preset_fields if f not in fields}, **fields}}
+    store.write(fname, doc, admin)
+    ctx.store.save_mapping_version(name, entity, fields, admin)
+
+
+@router.post("/mapping/auto")
+def auto_map(admin: str = Depends(auth.current_admin)) -> dict:
+    """Map every source's data types at once: confident suggestions are saved, only
+    for fields not mapped yet; the rest is listed for review on Field mapping."""
+    ctx = get_context()
+    llm = ctx.engine.llm if ctx.engine.ai_enabled() else None
+    report, todo = [], []
+    for name, src in ctx.settings.sources.items():
+        for entity, spec in (src.get("entities") or {}).items():
+            if not spec or isinstance(spec, list) or entity not in model.ENTITIES:
+                continue
+            current = {f: e for f, e in _current_fields(src, entity).items() if e is not None}
+            try:
+                described = _describe(ctx, name, entity)
+                try:
+                    result = MappingAgent(llm, ctx.settings.signals).suggest(entity, described, current)
+                except LLMError:
+                    result = MappingAgent(None, ctx.settings.signals).suggest(entity, described, current)
+            except HTTPException as exc:
+                report.append({"source": name, "entity": entity, "accepted": [], "needs_review": [], "error": exc.detail})
+                continue
+            accepted = {s["field"]: s["expr"] for s in result["suggestions"] if s["auto_accept"] and s["field"] not in current}
+            if accepted:
+                todo.append((name, entity, {**current, **accepted}))
+            report.append({"source": name, "entity": entity, "accepted": sorted(accepted),
+                           "needs_review": [s["field"] for s in result["suggestions"] if not s["auto_accept"] and s["field"] not in current]
+                                           + result["required_missing"], "error": None})
 
     def change():
-        doc = store.read(fname)
-        # Preset fields the admin removed are nulled so the override wins.
-        doc[entity] = {"fields": {**{f: None for f in preset_fields if f not in body.fields}, **body.fields}}
-        store.write(fname, doc, admin)
-        ctx.store.save_mapping_version(name, entity, body.fields, admin)
-    return _apply(change)
+        for name, entity, fields in todo:
+            _write_mapping(ctx, name, entity, fields, admin)
+    return {**(_apply(change) if todo else {"ok": True, "errors": [], "warnings": []}), "mappings": report}
 
 
 # ---------------------------------------------------------------------------
@@ -983,19 +1229,137 @@ def slack_test(body: SlackTestBody, admin: str = Depends(auth.current_admin)) ->
 def health(admin: str = Depends(auth.current_admin)) -> dict:
     ctx = get_context()
     errors, warnings = validate_settings(ctx.settings)
-    report = None
-    try:
-        report = ctx.engine.linker.report() if ctx.engine.linker.cache_path.exists() else None
-    except Exception:  # noqa: BLE001 - health never fails because one source is down
-        report = None
+    report = _cached_link_report(ctx)
     return {
         "errors": errors, "warnings": warnings, "pack": ctx.settings.pack.get("name"),
         "sources": {n: {"last_test": _last_tests.get(n), **_connection_state(ctx, n, s)} for n, s in ctx.settings.sources.items()},
         "linking": _report_json(report) if report else None,
         "daily": ctx.store.assessment_stats(30), "recent": ctx.store.recent_assessments(20),
         "actions": ctx.store.action_summary(30),
-        "model_configured": bool(os.environ.get("ANTHROPIC_API_KEY")),
+        "model_configured": ctx.engine.ai_enabled(),
     }
+
+
+def _cached_link_report(ctx):
+    """The last account-matching report, without querying any source."""
+    try:
+        return ctx.engine.linker.report() if ctx.engine.linker.cache_path.exists() else None
+    except Exception:  # noqa: BLE001 - health and the checklist never fail because one source is down
+        return None
+
+
+# ---------------------------------------------------------------------------
+# setup checklist, demo workspace
+# ---------------------------------------------------------------------------
+
+def _checklist(ctx) -> list[dict]:
+    """What is left to do, from what is already known — no source is queried."""
+    cat = packs.catalog(ctx.settings, "")
+    sources = ctx.settings.sources
+    missing_required = [c["label"] for c in cat["categories"] if c.get("required") and not c["configured_sources"]]
+    broken = sorted(n for n, s in sources.items() if not _connection_state(ctx, n, s)["credentials_complete"]
+                    or (_last_tests.get(n) or {"ok": True})["ok"] is False)
+    unmapped = sorted(f"{n}: {signals_mod.label(e)}" for n, s in sources.items() for e, spec in (s.get("entities") or {}).items()
+                      if spec and not isinstance(spec, list) and e in model.ENTITIES
+                      and any(_current_fields(s, e).get(f) is None for f in ["id"] + REQUIRED.get(e, [])))
+    report = _cached_link_report(ctx)
+    low = sorted(n for n, s in (_report_json(report)["sources"] if report else {}).items() if s["method"] != "same_id" and s["coverage"] < 0.8)
+    available = ctx.engine.available_entities()
+    with_data = sum(1 for s in ctx.settings.signals if signals_mod.required_entities(s) & available)
+    items = [
+        ("connect", "Connect your systems", not missing_required, "still to connect: " + ", ".join(missing_required), "sources"),
+        ("credentials", "Sign in and test every connection", bool(sources) and not broken, "check: " + ", ".join(broken), "sources"),
+        ("mapping", "Map the required fields", bool(sources) and not unmapped, "missing required fields — " + "; ".join(unmapped[:4]), "mapping"),
+        ("matching", "Match accounts across systems (80%+)", report is not None or len(sources) <= 1, "below 80%: " + ", ".join(low) if low
+         else "build the matches on Account matching", "matching"),
+        ("signals", "At least 5 warning signs have data", with_data >= 5, f"{with_data} have data so far", "signals"),
+        ("access", "Give people access", bool((ctx.settings.access or {}).get("users")), "add people on Access & Slack", "access"),
+        ("slack", "Connect Slack", bool((ctx.settings.slack or {}).get("bot_token")), "add the Slack app tokens", "access"),
+        ("first_answer", "Ask your first question", bool(ctx.store.recent_assessments(1)), "ask in Slack or on the Ask page", "health"),
+    ]
+    return [{"key": k, "label": label, "done": bool(done), "detail": "" if done else detail, "route": route}
+            for k, label, done, detail, route in items]
+
+
+@router.get("/setup/checklist")
+def setup_checklist(admin: str = Depends(auth.current_admin)) -> dict:
+    ctx = get_context()
+    items = _checklist(ctx)
+    return {"items": items, "done": sum(i["done"] for i in items), "total": len(items), "workspace": workspace.status(ctx)}
+
+
+class WorkspaceBody(BaseModel):
+    name: str
+
+
+@router.put("/workspace")
+def switch_workspace(body: WorkspaceBody, admin: str = Depends(auth.current_admin)) -> dict:
+    """Switch between your real setup ("home") and the built-in sample data ("demo")."""
+    try:
+        return workspace.status(workspace.switch(body.name))
+    except (ValueError, FileNotFoundError) as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+# ---------------------------------------------------------------------------
+# accuracy: backtest on closed renewals, rules weights
+# ---------------------------------------------------------------------------
+
+class BacktestBody(BaseModel):
+    start: str
+    end: str
+    lead_days: int | None = None
+
+
+@router.post("/backtest")
+def run_backtest(body: BacktestBody, admin: str = Depends(auth.current_admin)) -> dict:
+    ctx = get_context()
+    store = config_store(ctx)
+    result = backtest.run(ctx.engine, body.start, body.end, body.lead_days, backtest.read_outcomes(store.read_text("outcomes.csv") or ""))
+    if "error" in result:
+        raise HTTPException(400, result["error"])
+    result["run_at"] = time.time()
+    (ctx.settings.state_dir / "backtest.json").write_text(json.dumps(result), encoding="utf-8")
+    return result
+
+
+@router.get("/backtest")
+def last_backtest(admin: str = Depends(auth.current_admin)) -> dict:
+    path = get_context().settings.state_dir / "backtest.json"
+    return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+
+
+@router.post("/backtest/outcomes")
+async def upload_outcomes(file: UploadFile = File(...), admin: str = Depends(auth.current_admin)) -> dict:
+    """outcomes.csv: account_id, close_date, outcome (renewed | downgraded | churned) — wins over the CRM's stages."""
+    text = (await file.read()).decode("utf-8-sig", errors="replace")
+    rows = backtest.read_outcomes(text)
+    if not rows:
+        raise HTTPException(400, "expected columns account_id, close_date, outcome (renewed, downgraded or churned)")
+    store = config_store(get_context())
+    result = _apply(lambda: store.write_text("outcomes.csv", text, admin))
+    return {**result, "rows": len(rows)}
+
+
+class ScoringBody(BaseModel):
+    weights: dict
+    thresholds: dict
+
+
+@router.put("/rules")
+def save_rules(body: ScoringBody, admin: str = Depends(auth.current_admin)) -> dict:
+    """Apply scoring weights (e.g. the backtest's suggestion) — versioned in agent.yaml."""
+    weights = {k: int(body.weights[k]) for k in ("high", "medium", "low") if k in body.weights}
+    thresholds = {k: int(body.thresholds[k]) for k in ("high", "medium") if k in body.thresholds}
+    if len(weights) != 3 or len(thresholds) != 2 or not 0 < thresholds["medium"] < thresholds["high"] <= 100:
+        raise HTTPException(400, "give weights for high, medium and low, and thresholds 0 < medium < high <= 100")
+    store = config_store(get_context())
+
+    def change():
+        doc = store.read("agent.yaml")
+        doc["rules"] = {**(doc.get("rules") or {}), "weights": weights, "thresholds": thresholds}
+        store.write("agent.yaml", doc, admin)
+    return _apply(change)
 
 
 @router.get("/feedback")

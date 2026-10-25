@@ -77,10 +77,12 @@ def test_portfolio_screens_all_and_assesses_flagged(ctx):
     assert result["assessed_now"] == 3  # demo agent.yaml caps paid assessments at 3
     assert result["rows"][0]["band"] == "high"
     text, body = kit.answer_blocks(result)
-    assert body[0]["type"] == "section" and len(body) <= 50
+    assert body[0]["type"] == "header" and len(body) <= 50
+    rows = [b for b in body if b.get("accessory")]
+    assert rows and "Renews" in rows[0]["text"]["text"] and "amount_decrease" not in rows[0]["text"]["text"]
     text, body = kit.answer_blocks(result, {"renewals": "SOW renewals"})
     assert text.startswith("SOW renewals")
-    assert "renewals" in body[0]["text"]["text"].lower()
+    assert body[0]["text"]["text"].startswith("SOW renewals")
 
 
 def test_slack_blocks_for_assessment(ctx):
@@ -90,9 +92,21 @@ def test_slack_blocks_for_assessment(ctx):
     assert "Acme Corp" in text
     assert body[-1]["type"] == "actions"
     assert {e["action_id"] for e in body[-1]["elements"]} == {"rr_view_evidence", "rr_rerun", "rr_feedback_agree", "rr_feedback_disagree"}
-    modal = kit.evidence_modal(view)
-    assert modal["type"] == "modal" and len(modal["blocks"]) >= 5
-    assert all(len(b["text"]["text"]) <= 3000 for b in body if b["type"] == "section")
+    assert body[0]["type"] == "header" and "Acme Corp" in body[0]["text"]["text"] and "High risk" in body[0]["text"]["text"]
+    message = str(body)
+    # Plain language: no internal signal names or record ids in the message itself.
+    signs = next(b["text"]["text"] for b in body if b["type"] == "section" and "text" in b and "Top warning signs" in b["text"]["text"])
+    assert "Amount decrease" in signs and "amount_decrease" not in signs
+    assert "What to do next" in message and "crm:" not in message
+    modal = kit.evidence_modal(view, {"crm": "Salesforce"})
+    details = str(modal["blocks"])
+    assert modal["type"] == "modal" and len(modal["blocks"]) <= 100
+    assert "How it's calculated" in details and "in Salesforce" in details and "warning signs" in details
+    assert "Looked at" in details and "crm:" not in details
+    for b in body + modal["blocks"]:
+        if b["type"] == "section":
+            texts = [b["text"]["text"]] if "text" in b else [f["text"] for f in b["fields"]]
+            assert all(len(t) <= 3000 for t in texts)
 
 
 def test_api_auth_and_endpoints(ctx, monkeypatch):

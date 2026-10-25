@@ -40,28 +40,30 @@ _MENTION = re.compile(r"<@[A-Z0-9]+>")
 
 
 class SlackIdentity:
-    """Slack user id -> Principal, via the profile email (cached for an hour)."""
+    """Slack user id -> Principal, via the profile email (cached for an hour, per
+    configuration — an access.yaml change or a workspace switch starts afresh)."""
 
-    def __init__(self, ctx: AppContext, client):
-        self.ctx = ctx
+    def __init__(self, client):
         self.client = client
         self._cache: dict[str, tuple[Principal | None, float]] = {}
         self._lock = threading.Lock()
 
     def principal(self, user_id: str) -> Principal | None:
+        ctx = get_context()
+        key = f"{id(ctx)}:{user_id}"
         with self._lock:
-            hit = self._cache.get(user_id)
+            hit = self._cache.get(key)
             if hit and time.time() - hit[1] < 3600:
                 return hit[0]
         try:
             info = self.client.users_info(user=user_id)
             profile = (info.get("user") or {}).get("profile") or {}
-            principal = self.ctx.policy.principal_for_email(profile.get("email"), profile.get("real_name"))
+            principal = ctx.policy.principal_for_email(profile.get("email"), profile.get("real_name"))
         except Exception as exc:  # noqa: BLE001 - missing users:read.email scope, network...
             print(f"slack: could not resolve user {user_id}: {exc}", file=sys.stderr)
             principal = None
         with self._lock:
-            self._cache[user_id] = (principal, time.time())
+            self._cache[key] = (principal, time.time())
         return principal
 
 
@@ -69,7 +71,19 @@ NO_ACCESS = ("You don't have access to renewal-risk data yet. Ask your admin to 
              "to access.yaml (and make sure the app has the users:read.email scope).")
 
 
+def source_labels(ctx: AppContext) -> dict[str, str]:
+    """Source name -> the system's name people know ("crm" -> "Salesforce")."""
+    from ..core.settings import load_presets
+    from ..core.signals import label
+
+    presets = load_presets(ctx.settings.dir)
+    return {name: (presets.get(cfg.get("preset") or "") or {}).get("label") or label(name)
+            for name, cfg in ctx.settings.sources.items()}
+
+
 def build_app(ctx: AppContext | None = None):
+    """The Bolt app. Its tokens come from `ctx`; every event reads the live
+    context, so config changes and workspace switches apply without a restart."""
     try:
         from slack_bolt import App
     except ImportError as exc:
@@ -80,24 +94,32 @@ def build_app(ctx: AppContext | None = None):
         raise RuntimeError("slack.yaml: bot_token is not set (SLACK_BOT_TOKEN)")
     app = App(token=cfg["bot_token"], signing_secret=cfg.get("signing_secret") or None,
               token_verification_enabled=bool(cfg.get("verify_token", True)))
-    identity = SlackIdentity(ctx, app.client)
+    identity = SlackIdentity(app.client)
     command = cfg.get("command", "/renewal-risk")
     visibility = cfg.get("reply_visibility", "ephemeral")
+    labels: dict[int, dict] = {}
 
-    terms = ctx.settings.pack.get("terminology") or {}
+    def names() -> dict:
+        """Friendly system names for the live configuration (worked out once per configuration)."""
+        live = get_context()
+        if id(live) not in labels:
+            labels.clear()
+            labels[id(live)] = source_labels(live)
+        return labels[id(live)]
 
     def answer(principal: Principal, question: str) -> tuple[str, list]:
         """Always returns something to post: an error becomes a readable reply, never silence."""
         started = time.time()
+        live = get_context()
         try:
-            result = ctx.service.ask(principal, question)
+            result = live.service.ask(principal, question)
         except (AccessDenied, ConnectorError, LLMError, PolicyError) as exc:
             result = {"type": "error", "message": str(exc)}
         except Exception as exc:  # noqa: BLE001 - the asker must hear back
             print(f"slack: question from {principal.email} failed: {exc!r}", file=sys.stderr)
             result = {"type": "error", "message": "Something went wrong while answering — the admin can see the details in the service log."}
         print(f"slack: {principal.email} asked {question!r} -> {result.get('type')} in {time.time() - started:.1f}s", file=sys.stderr)
-        return kit.answer_blocks(result, terms)
+        return kit.answer_blocks(result, live.settings.pack.get("terminology") or {}, names())
 
     @app.command(command)
     def on_command(ack, command, respond):
@@ -152,8 +174,8 @@ def build_app(ctx: AppContext | None = None):
         if principal is None:
             return
         try:
-            view = ctx.service.account_assessment(principal, _account_from(body))
-            client.views_open(trigger_id=body["trigger_id"], view=kit.evidence_modal(view))
+            view = get_context().service.account_assessment(principal, _account_from(body))
+            client.views_open(trigger_id=body["trigger_id"], view=kit.evidence_modal(view, names()))
         except AccessDenied as exc:
             client.chat_postEphemeral(channel=body["channel"]["id"], user=body["user"]["id"], text=str(exc))
 
@@ -165,8 +187,8 @@ def build_app(ctx: AppContext | None = None):
             respond(response_type="ephemeral", text=NO_ACCESS, replace_original=False)
             return
         try:
-            view = ctx.service.account_assessment(principal, _account_from(body))
-            respond(response_type="ephemeral", text=view["account_name"], blocks=kit.assessment_blocks(view), replace_original=False)
+            view = get_context().service.account_assessment(principal, _account_from(body))
+            respond(response_type="ephemeral", text=view["account_name"], blocks=kit.assessment_blocks(view, sources=names()), replace_original=False)
         except (AccessDenied, ConnectorError, LLMError, PolicyError) as exc:
             respond(response_type="ephemeral", text=str(exc), replace_original=False)
 
@@ -178,10 +200,10 @@ def build_app(ctx: AppContext | None = None):
                 return
             data = json.loads(body["actions"][0]["value"])
             try:
-                ctx.service._visible(principal, data["account_id"])
+                get_context().service._visible(principal, data["account_id"])
             except AccessDenied:
                 return
-            ctx.store.add_feedback(data["account_id"], principal.email, verdict, assessment_id=data.get("assessment_id"))
+            get_context().store.add_feedback(data["account_id"], principal.email, verdict, assessment_id=data.get("assessment_id"))
             respond(response_type="ephemeral", replace_original=False,
                     text="Thanks — noted. Your feedback is used to check and tune the agent." if verdict == "agree"
                     else "Thanks — noted as wrong. An admin can review it on the Health & feedback page.")
@@ -195,7 +217,7 @@ def build_app(ctx: AppContext | None = None):
         def handler(ack, body, respond):
             ack()
             principal = identity.principal(body["user"]["id"])
-            item = update_action(ctx, principal, int(json.loads(body["actions"][0]["value"])["item_id"]), status)
+            item = update_action(get_context(), principal, int(json.loads(body["actions"][0]["value"])["item_id"]), status)
             if item is None:
                 respond(response_type="ephemeral", text="Only the owner of this action can update it.", replace_original=False)
                 return
@@ -217,8 +239,8 @@ def build_app(ctx: AppContext | None = None):
             return
         respond(response_type="ephemeral", text=":hourglass_flowing_sand: Running a fresh assessment…", replace_original=False)
         try:
-            view = ctx.service.account_assessment(principal, _account_from(body), fresh=True)
-            respond(response_type="ephemeral", text=view["account_name"], blocks=kit.assessment_blocks(view), replace_original=False)
+            view = get_context().service.account_assessment(principal, _account_from(body), fresh=True)
+            respond(response_type="ephemeral", text=view["account_name"], blocks=kit.assessment_blocks(view, sources=names()), replace_original=False)
         except (AccessDenied, ConnectorError, LLMError, PolicyError) as exc:
             respond(response_type="ephemeral", text=str(exc), replace_original=False)
 
@@ -249,8 +271,16 @@ def run(ctx: AppContext | None = None, block: bool = True):
         handler = SocketModeHandler(app, cfg["app_token"])
         if block:
             handler.start()
-        else:
-            handler.connect()
+            return handler
+        for attempt in range(6):  # a network blip at start-up must not leave the service without Slack
+            try:
+                handler.connect()
+                return handler
+            except Exception as exc:  # noqa: BLE001
+                wait = min(60, 5 * 2 ** attempt)
+                print(f"slack: could not connect ({exc}); retrying in {wait}s", file=sys.stderr)
+                time.sleep(wait)
+        handler.connect()
         return handler
     import os
     app.start(port=int(os.environ.get("SLACK_PORT", "3000")))
@@ -258,7 +288,8 @@ def run(ctx: AppContext | None = None, block: bool = True):
 
 
 class SlackNotifier:
-    """Sends alerts. Used by the scheduler; independent of the Bolt app."""
+    """Sends alerts and action DMs. Used by the scheduler; independent of the Bolt app.
+    Alert routing and access are read from the live configuration on every send."""
 
     def __init__(self, ctx: AppContext):
         from slack_sdk import WebClient
@@ -266,8 +297,6 @@ class SlackNotifier:
         cfg = ctx.settings.slack or {}
         if not cfg.get("bot_token"):
             raise RuntimeError("slack.yaml: bot_token is not set — alerts cannot be sent")
-        self.ctx = ctx
-        self.cfg = cfg.get("alerts") or {}
         self.client = WebClient(token=cfg["bot_token"])
         self._channels: dict[str, str] = {}  # email -> DM channel, looked up once per notifier
 
@@ -284,25 +313,27 @@ class SlackNotifier:
             return False
 
     def send_alert(self, view: dict, account: dict, previous_band: str | None) -> list[str]:
-        terms = self.ctx.settings.pack.get("terminology") or {}
+        ctx = get_context()
+        alerts = (ctx.settings.slack or {}).get("alerts") or {}
+        terms = ctx.settings.pack.get("terminology") or {}
         text = f"{kit.cap(terms.get('renewal', 'renewal'))} risk alert: {view['account_name']} is now {view['band']} risk ({view['score']}/100)"
-        body = kit.alert_blocks(view, previous_band, terms)
+        body = kit.alert_blocks(view, previous_band, terms, source_labels(ctx))
         delivered = []
-        if self.cfg.get("channel"):
+        if alerts.get("channel"):
             try:
-                self.client.chat_postMessage(channel=self.cfg["channel"], text=text, blocks=body)
-                delivered.append(self.cfg["channel"])
+                self.client.chat_postMessage(channel=alerts["channel"], text=text, blocks=body)
+                delivered.append(alerts["channel"])
             except Exception as exc:  # noqa: BLE001
-                print(f"slack: could not post to {self.cfg['channel']}: {exc}", file=sys.stderr)
+                print(f"slack: could not post to {alerts['channel']}: {exc}", file=sys.stderr)
         recipients = set()
-        if self.cfg.get("dm_owner", True) and account.get("owner_email"):
+        if alerts.get("dm_owner", True) and account.get("owner_email"):
             # Only DM owners who are themselves allowed to see the account.
-            owner = self.ctx.policy.principal_for_email(account["owner_email"])
+            owner = ctx.policy.principal_for_email(account["owner_email"])
             from ..access.rbac import can_view
             if owner and can_view(owner, account):
                 recipients.add(owner.email)
-        if self.cfg.get("dm_roles"):
-            recipients.update(self.ctx.policy.emails_who_can_view(account, self.cfg["dm_roles"]))
+        if alerts.get("dm_roles"):
+            recipients.update(ctx.policy.emails_who_can_view(account, alerts["dm_roles"]))
         for email in sorted(recipients):
             if self._dm(email, text, body):
                 delivered.append(email)

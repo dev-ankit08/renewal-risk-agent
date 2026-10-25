@@ -27,6 +27,12 @@ def slug(text: str) -> str:
     return re.sub(r"[^a-z0-9_]+", "_", str(text or "").lower()).strip("_")[:48] or "play"
 
 
+def severity_reached(play: dict, fired: list[dict]) -> bool:
+    """Did any of the play's signals fire at or above its minimum severity?"""
+    ranks = [SEVERITY_RANK.get(s["severity"], 0) for s in fired if s["name"] in play.get("signals", [])]
+    return bool(ranks) and max(ranks) >= SEVERITY_RANK.get(play.get("min_severity", "any"), 0)
+
+
 def normalize_owner_role(role) -> dict | None:
     if isinstance(role, str):
         return {"name": role.strip(), "find": {}} if role.strip() else None

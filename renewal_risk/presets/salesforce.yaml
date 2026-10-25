@@ -56,7 +56,7 @@ entities:
   renewal:
     fetch: {object: Opportunity, account_field: AccountId}
     list:
-      soql: "SELECT Id, AccountId, Account.Name, Name, Amount, CloseDate, StageName, IsClosed, LastStageChangeDate, CreatedDate, LastModifiedDate FROM Opportunity WHERE IsClosed = false AND CloseDate <= {before} AND CloseDate >= {after} ORDER BY CloseDate ASC LIMIT 2000"
+      soql: "SELECT Id, AccountId, Account.Name, Name, Amount, CloseDate, StageName, IsClosed, LastStageChangeDate, CreatedDate, LastModifiedDate FROM Opportunity WHERE CloseDate <= {before} AND CloseDate >= {after} ORDER BY CloseDate ASC LIMIT 2000"
     fields:
       id: Id
       account_id: AccountId

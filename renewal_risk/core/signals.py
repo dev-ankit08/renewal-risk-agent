@@ -359,7 +359,16 @@ def _plural(entity) -> str:
     if isinstance(entity, list):
         return " or ".join(_plural(e) for e in entity)
     word = str(entity or "record").replace("_", " ")
-    return word[:-1] + "ies" if word.endswith("y") else word + "s"
+    return word[:-1] + "ies" if word.endswith("y") and word[-2:-1] not in "aeiou" else word + "s"  # activities, surveys
+
+
+_WORDS = {"arr": "ARR", "sow": "SOW", "csat": "CSAT", "nps": "NPS", "rag": "RAG", "crm": "CRM", "erp": "ERP", "opp": "opportunity", "p1": "P1"}
+
+
+def label(name) -> str:
+    """A signal, area or source name for people: opp_stalled -> "Opportunity stalled"."""
+    text = " ".join(_WORDS.get(w, w) for w in str(name or "").split("_") if w)
+    return text[:1].upper() + text[1:]
 
 
 def _fname(field) -> str:
@@ -547,16 +556,20 @@ def required_entities(sig: dict) -> set[str]:
 
 
 def evaluate(signals: list[dict], records: dict[str, list[dict]], as_of: str, available: set[str]) -> dict[str, dict]:
-    """-> {specialist: {"signals": [...], "gaps": [...], "evidence_refs": [...]}}"""
+    """-> {specialist: {"signals": [...], "gaps": [...], "evidence_refs": [...], "checked": [names]}}
+    `checked` = signals that ran on real data (fired or not); the rest are gaps."""
     out: dict[str, dict] = {}
     for sig in signals:
-        bucket = out.setdefault(sig.get("specialist", "general"), {"signals": [], "gaps": [], "evidence_refs": []})
+        bucket = out.setdefault(sig.get("specialist", "general"), {"signals": [], "gaps": [], "evidence_refs": [], "checked": []})
         needed = required_entities(sig)
         missing = sorted(needed - available)
         # Partial availability is fine for multi-entity rules (activity from
         # one source, meetings from another); only skip when nothing is there.
         if missing and (needed - set(missing)) == set():
             bucket["gaps"].append(f"{sig['name']} not evaluated — no source provides {', '.join(missing)}")
+            continue
+        if needed and not any(records.get(e) for e in needed):  # "0 tickets" for an account with no tickets at all is no evidence
+            bucket["gaps"].append(f"{sig['name']} not evaluated — no {_plural(sorted(needed))} for this account")
             continue
         rule = RULES.get(sig.get("rule"))
         if rule is None:
@@ -569,6 +582,7 @@ def evaluate(signals: list[dict], records: dict[str, list[dict]], as_of: str, av
             continue
         if gap:
             bucket["gaps"].append(gap)
+            continue
         if severity:
             ref = evidence.get("ref") if evidence else None
             if ref is None:
@@ -576,6 +590,7 @@ def evaluate(signals: list[dict], records: dict[str, list[dict]], as_of: str, av
                 continue
             bucket["signals"].append({"name": sig["name"], "severity": severity, "value": text, "evidence_ref": ref, "metric": metric})
             bucket["evidence_refs"].append(ref)
+        bucket["checked"].append(sig["name"])
     return out
 
 

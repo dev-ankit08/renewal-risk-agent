@@ -22,6 +22,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import date
 
 from . import guard, prompts, schemas, signals
+from .playbooks import severity_reached
 from .connector import ConnectorError, ConnectorPool
 from .linking import Linker
 from .llm import AnthropicLLM, LLMError, Usage, zdr_confirmed
@@ -55,6 +56,7 @@ class RunResult:
     llm_calls: int
     duration_s: float
     explanations: dict = field(default_factory=dict)  # signal name -> how it is calculated, as of this run
+    coverage: dict = field(default_factory=dict)  # warning signs checked on real data: {checked, total, missing, enough}
     assessment_id: int | None = None
     created_at: float = field(default_factory=time.time)
 
@@ -62,8 +64,63 @@ class RunResult:
         return asdict(self)
 
 
-def band_for(score: float) -> str:
-    return "high" if score >= 70 else "medium" if score >= 40 else "low"
+RULES = {"weights": {"high": 35, "medium": 15, "low": 5}, "thresholds": {"high": 70, "medium": 40}, "min_coverage": 0.4}
+
+
+def rules_config(agent: dict) -> dict:
+    """agent.yaml `rules:` over the defaults — the one place scoring is configured."""
+    own = agent.get("rules") or {}
+    return {k: {**v, **(own.get(k) or {})} if isinstance(v, dict) else own.get(k, v) for k, v in RULES.items()}
+
+
+def band_for(score: float, thresholds: dict | None = None) -> str:
+    t = thresholds or RULES["thresholds"]
+    return "high" if score >= t["high"] else "medium" if score >= t["medium"] else "low"
+
+
+def score_signals(fired: list[dict], weights: dict) -> int:
+    return min(100, sum(weights.get(s["severity"], 0) for s in fired))
+
+
+def coverage_verdict(candidates: dict[str, dict], total: int, min_coverage: float) -> dict:
+    """How many enabled warning signs could be checked on real data, and whether
+    that is enough to call an account low risk. Something that fired is always enough."""
+    checked = sorted({n for b in candidates.values() for n in b.get("checked", [])})
+    fired = any(b["signals"] for b in candidates.values())
+    return {"checked": len(checked), "total": total, "missing": total - len(checked),
+            "enough": fired or (total > 0 and len(checked) / total >= min_coverage)}
+
+
+def rules_assessment(account_id: str, packets: list[dict], playbooks: dict, rules: dict | None = None) -> dict:
+    """The no-AI assessment: score the fired signals and recommend the plays they
+    trigger. Same shape as the model's, so every interface renders it unchanged."""
+    rules = rules or RULES
+    weights = rules["weights"]
+    fired = sorted((s for p in packets for s in p["signals"]), key=lambda s: -weights.get(s["severity"], 0))
+    score = score_signals(fired, weights)
+    actions = []
+    for play in (playbooks or {}).get("plays") or []:
+        hits = [s for s in fired if s["name"] in play["signals"]]
+        if hits and severity_reached(play, hits):
+            actions.append({"action": play["action"], "owner_role": play["owner_role"], "priority": play["priority"],
+                            "due_in_days": play["due_in_days"], "evidence_refs": sorted({s["evidence_ref"] for s in hits}),
+                            "why": play.get("description") or "Because of: " + ", ".join(sorted({signals.label(s["name"]) for s in hits})) + ".",
+                            "playbook_id": play["id"]})
+    if fired:
+        counts = [f"{n} {word}" for word, n in (("serious", sum(s["severity"] == "high" for s in fired)),
+                                                 ("moderate", sum(s["severity"] == "medium" for s in fired)),
+                                                 ("minor", sum(s["severity"] == "low" for s in fired))) if n]
+        areas = [p["specialist"] for p in packets if p["signals"]]
+        area_text = ", ".join(areas[:-1]) + " and " + areas[-1] if len(areas) > 1 else areas[0]
+        rationale = (f"{len(fired)} warning sign{'s' if len(fired) != 1 else ''} found ({', '.join(counts)}) in {area_text}. "
+                     f"Most serious: {fired[0]['value']}.")
+    else:
+        rationale = "No warning signs found in the records available for this account."
+    return {
+        "account_id": account_id, "score": score, "band": band_for(score, rules["thresholds"]), "mode": "rules",
+        "drivers": [s["name"] for s in fired[:5]], "citations": sorted({s["evidence_ref"] for s in fired}),
+        "abstained": False, "recommended_actions": actions[:4], "rationale": rationale,
+    }
 
 
 def _for_prompt(record: dict) -> dict:
@@ -133,8 +190,9 @@ class Engine:
             [{"account_id": h["id"], "name": h.get("name")} for h in pool[:10]],
         )
 
-    def list_renewals(self, before: str, after: str | None = None) -> list[dict]:
-        """Open renewals closing in [after, before], one row per account (earliest)."""
+    def list_renewals(self, before: str, after: str | None = None, closed: bool = False) -> list[dict]:
+        """Open renewals closing in [after, before], one row per account (earliest).
+        closed=True: every closed renewal in the window instead (the backtest's cases)."""
         providers = self.pool.providers("renewal")
         if not providers:
             raise ConnectorError("no source provides 'renewal' — renewal windows need one")
@@ -143,15 +201,14 @@ class Engine:
         names: dict[str, str] = {}
         out: dict[str, dict] = {}
         for r in rows:
-            close = r.get("close_date")
-            if r.get("is_open") is False or not close or close > before or (after and close < after):
+            close, account_id = r.get("close_date"), r.get("account_id")
+            if not close or close > before or (after and close < after) or not account_id or (r.get("is_open") is False) != closed:
                 continue
-            account_id = r.get("account_id")
-            if not account_id:
-                continue
-            if account_id not in out or close < out[account_id]["close_date"]:
-                out[account_id] = {"account_id": account_id, "name": r.get("account_name"), "close_date": close,
-                                   "amount": r.get("amount"), "renewal_ref": r["ref"]}
+            row = {"account_id": account_id, "name": r.get("account_name"), "close_date": close, "amount": r.get("amount"), "renewal_ref": r["ref"]}
+            if closed:
+                out[r["ref"]] = {**row, "stage": r.get("stage"), "prior_amount": r.get("prior_amount")}
+            elif account_id not in out or close < out[account_id]["close_date"]:
+                out[account_id] = row
         missing = [a for a in out.values() if not a["name"]]
         if missing:
             try:
@@ -221,9 +278,16 @@ class Engine:
         return {
             "account_id": account_id, "as_of": as_of,
             "signals": all_signals, "high_count": high, "medium_count": medium,
-            "flag": high > 0 or medium >= 2,
+            "flag": high > 0 or medium >= 2, "coverage": self.coverage(result),
             "gaps": gaps + [g for bucket in result.values() for g in bucket["gaps"]],
         }
+
+    def coverage(self, candidates: dict[str, dict]) -> dict:
+        return coverage_verdict(candidates, len(self.settings.signals), self.rules["min_coverage"])
+
+    @property
+    def rules(self) -> dict:
+        return rules_config(self.settings.agent)
 
     # -- full assessment -------------------------------------------------------
 
@@ -239,12 +303,19 @@ class Engine:
                 "agent.yaml or RENEWAL_AGENT_ZDR_CONFIRMED=true."
             )
 
+    def ai_enabled(self) -> bool:
+        """`llm.mode`: ai | rules | auto (default — AI only when a real API key is set)."""
+        mode = self.settings.agent["llm"].get("mode", "auto")
+        return mode == "ai" or (mode == "auto" and getattr(self.llm, "configured", True))
+
     def assess(self, account_id: str, as_of: str | None = None, account_name: str | None = None) -> RunResult:
         started = time.time()
         as_of = as_of or date.today().isoformat()
         usage = Usage()
         records, source_gaps, used = self.gather(account_id, as_of)
-        self._check_policy(used)
+        ai = self.ai_enabled()
+        if ai:
+            self._check_policy(used)  # rules mode sends nothing outside this service
         self._log(account_id, as_of, "gather", {"counts": {e: len(r) for e, r in records.items()}, "gaps": source_gaps})
 
         available = self.available_entities()
@@ -260,7 +331,7 @@ class Engine:
 
         coordinator = None
         chosen = list(runnable)
-        if runnable and self.settings.agent["llm"].get("use_coordinator", True) and len(runnable) > 1:
+        if ai and runnable and self.settings.agent["llm"].get("use_coordinator", True) and len(runnable) > 1:
             system, user = prompts.coordinator_prompt(account_id, runnable)
             coordinator = self.llm.structured("coordinator", system, user, schemas.COORDINATOR_SCHEMA, usage)
             picked = [s for s in coordinator.get("specialists", []) if s in runnable]
@@ -290,8 +361,16 @@ class Engine:
             packet["evidence_refs"] = sorted({r for r in packet["evidence_refs"] if r in known} | {s["evidence_ref"] for s in kept})
             return packet
 
+        def rules_packet(role: str) -> dict:  # the deterministic signals, as a specialist would report them
+            found = candidates.get(role, {"signals": [], "gaps": []})
+            kept = [{k: s[k] for k in ("name", "severity", "value", "evidence_ref")} for s in found["signals"]]
+            return {"specialist": role, "account_id": account_id, "as_of": as_of, "signals": kept,
+                    "gaps": list(found["gaps"]), "evidence_refs": sorted({s["evidence_ref"] for s in kept})}
+
         packets: list[dict] = []
-        if chosen:
+        if not ai:
+            packets = [rules_packet(role) for role in chosen]
+        elif chosen:
             with ThreadPoolExecutor(max_workers=len(chosen)) as pool:
                 packets = list(pool.map(run_specialist, chosen))
         for packet in packets:
@@ -311,6 +390,8 @@ class Engine:
                              "Check that the account is linked in each source (`renewal-risk link --preview`).",
                 "recommended_actions": [],
             }
+        elif not ai:
+            assessment = rules_assessment(account_id, packets, self.settings.playbooks, self.rules)
         else:
             system, user = prompts.synthesis_prompt(account_id, account_name, as_of, packets, self.settings.playbooks)
             assessment = self.llm.structured("synthesis", system, user, schemas.RISK_ASSESSMENT_SCHEMA, usage, check=schemas.check_assessment)
@@ -326,7 +407,10 @@ class Engine:
                 if action.get("playbook_id") not in play_ids:
                     action["playbook_id"] = ""  # the model named a play that does not exist
             assessment["account_id"] = account_id
-            assessment["band"] = band_for(assessment["score"])
+            assessment["band"] = band_for(assessment["score"], self.rules["thresholds"])
+        coverage = self.coverage(candidates)
+        if not coverage["enough"]:  # never "low risk" when too little could be checked — in either mode
+            assessment["abstained"] = True
         self._log(account_id, as_of, "synthesis", assessment)
 
         by_name = {s["name"]: s for s in self.settings.signals}
@@ -337,7 +421,7 @@ class Engine:
             candidates=candidates, coordinator=coordinator, leakage_violations=leakage, fabricated_refs=sorted(set(fabricated)),
             source_gaps=source_gaps, record_counts={e: len(r) for e, r in records.items()},
             cost_usd=round(usage.cost_usd, 4), llm_calls=usage.calls, duration_s=round(time.time() - started, 1),
-            explanations=explanations,
+            explanations=explanations, coverage=coverage,
         )
         if self.store is not None:
             result.assessment_id = self.store.save_assessment(result)

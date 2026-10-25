@@ -25,10 +25,24 @@ export default function MappingPage({ route }: { route: string }) {
 
 function PickEntity({ source }: { source?: string }) {
   const sources = useLoad(() => api.get<{ sources: SourceInfo[] }>("/sources"));
+  const [mapping, setMapping] = useState(false);
+  const [note, setNote] = useState<string | null>(null);
+  const autoMap = () => { // confident suggestions are saved for every source; the rest stays for review here
+    setMapping(true);
+    api.post<{ mappings: { accepted: string[]; needs_review: string[] }[] }>("/mapping/auto")
+      .then((r) => setNote(`Mapped ${r.mappings.reduce((n, m) => n + m.accepted.length, 0)} field(s) automatically; `
+        + `${r.mappings.filter((m) => m.needs_review.length).length} data type(s) have fields to review below.`))
+      .catch((e: Error) => setNote(e.message)).finally(() => setMapping(false));
+  };
   return (
     <>
-      <h2>Field mapping</h2>
+      <div className="row">
+        <h2>Field mapping</h2>
+        <span className="spacer" />
+        <button onClick={autoMap} disabled={mapping}>{mapping ? "Mapping…" : "Auto-map all fields"}</button>
+      </div>
       <p className="lead">Tell the agent which field in each system means what. The AI proposes a mapping from field names, labels, descriptions and sample values; you review and save it.</p>
+      <Notice kind="ok">{note}</Notice>
       {sources.error && <Notice kind="bad">{sources.error}</Notice>}
       {sources.data?.sources.filter((s) => !source || s.name === source).map((s) => (
         <div className="card" key={s.name}>

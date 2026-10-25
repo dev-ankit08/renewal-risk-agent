@@ -76,7 +76,7 @@ export default function HealthPage() {
           </div>
           <div className="card">
             <h3>Recent assessments — was the agent right?</h3>
-            <p className="muted small">Your verdicts and the real renewal outcomes feed the evaluation (renewal-risk evaluate).</p>
+            <p className="muted small">Your verdicts and the real outcomes are kept with each answer. To measure accuracy on renewals that already closed, open Accuracy.</p>
             <table>
               <thead><tr><th>Account</th><th>Risk</th><th>When</th><th>Your verdict</th><th>Actual outcome</th></tr></thead>
               <tbody>

@@ -166,3 +166,109 @@ def test_admin_ui_end_to_end(server, page, ctx, demo_config, monkeypatch):
     assert page.get_by_text("Recommended actions").count(), page.locator("#results").inner_text()
     assert page.locator(".badge.high").count() >= 1
     assert errors == [], errors
+
+
+def test_custom_section_in_the_ui(server, page, ctx, demo_config, tmp_path):
+    """Add a "Customer surveys" section, start its fields from a CSV, connect the CSV,
+    map it, then add a warning sign for it and see it flag Acme."""
+    from renewal_risk.admin.api import secret_store_for
+    from renewal_risk.admin.auth import setup_token
+    from tests.conftest import TODAY
+
+    errors = []
+    page.on("pageerror", lambda e: errors.append(str(e)))
+    csv = tmp_path / "surveys.csv"
+    csv.write_text(f"id,account_id,score,responded_at\nS1,A001,3,{TODAY}\nS2,A001,5,{TODAY}\nS3,A002,9,{TODAY}\n", encoding="utf-8")
+
+    page.goto(f"{server}/admin/")
+    page.locator("input[type=radio][value=saas]").check()
+    page.locator("form input").nth(2).fill(setup_token(secret_store_for(ctx), ctx.store))
+    page.locator("input[type=email]").fill("admin@demo.example")
+    page.locator("input[type=password]").fill("long-enough-pw")
+    page.get_by_role("button", name="Create admin & continue").click()
+
+    # 1. Define the section: name, fields from the CSV header, what its specialist looks for.
+    page.get_by_role("heading", name="Data sources").wait_for()
+    page.get_by_role("button", name="+ Add section").click()
+    dialog = page.get_by_role("dialog")
+    dialog.get_by_label("section name").fill("Customer surveys")
+    assert dialog.get_by_label("data type name").input_value() == "customer_survey"
+    dialog.get_by_label("data type name").fill("survey")
+    dialog.get_by_label("fields from csv").set_input_files(str(csv))
+    page.wait_for_function("document.querySelectorAll('[aria-label=\"field name\"]').length === 2")  # id / account_id are standard
+    assert [dialog.get_by_label("field type").nth(i).input_value() for i in range(2)] == ["num", "date"]
+    dialog.get_by_label("date field").select_option("responded_at")
+    dialog.get_by_label("specialist focus").fill("Judge whether the customer is unhappy from their survey scores.")
+    dialog.get_by_role("button", name="Save section").click()
+    card = page.locator(".card", has=page.get_by_role("heading", name="Customer surveys"))
+    card.get_by_text("custom section").wait_for()
+
+    # 2. Connect it with a CSV upload and map its fields.
+    card.get_by_role("button", name="+ Connect a system").click()
+    dialog = page.get_by_role("dialog")
+    assert "MCP server" in dialog.get_by_label("connection kind").inner_text()  # SQL, REST and MCP are offered too
+    dialog.locator("input[type=file]").set_input_files(str(csv))
+    dialog.get_by_label("Synthetic test data only").check()
+    dialog.get_by_role("button", name="Upload").click()
+    dialog.get_by_role("button", name="Continue to field mapping").click()
+    page.get_by_role("heading", name="survey from customer_surveys_data").wait_for()
+    page.get_by_role("button", name="Suggest with AI").click()
+    page.get_by_text("fake model").first.wait_for()
+    page.get_by_role("button", name="Save mapping").click()
+    page.get_by_text("Saved", exact=False).first.wait_for()
+
+    # 3. Add a warning sign for the section — the builder opens on its data and specialist.
+    page.get_by_role("link", name="Data sources").click()
+    card.get_by_role("button", name="+ Add warning sign").click()
+    dialog = page.get_by_role("dialog")
+    assert dialog.get_by_label("record type").input_value() == "survey"
+    assert dialog.get_by_label("specialist").input_value() == "customer_surveys"
+    dialog.get_by_label("signal name").fill("low_survey_scores")
+    dialog.get_by_role("button", name="+ condition").click()
+    dialog.get_by_label("condition field").select_option("score")
+    dialog.get_by_label("condition operator").select_option("lte")
+    dialog.get_by_label("condition value").fill("6")
+    dialog.get_by_text("Counts surveys that have score at most 6. Medium at 1 or more, high at 2 or more.").wait_for()
+    dialog.get_by_role("button", name="Test signal").click()
+    dialog.get_by_text("accounts would be flagged").wait_for()
+    assert dialog.locator("tr", has_text="A001").locator(".badge", has_text="high").count() == 1
+    dialog.get_by_role("button", name="Save signal").click()
+    page.locator("strong", has_text="low_survey_scores").wait_for()
+    assert errors == [], errors
+
+
+def test_checklist_demo_workspace_and_accuracy(server, page, ctx, demo_config):
+    """First run lands on the setup checklist; "Try with sample data" opens the demo
+    workspace; Accuracy backtests it; switching back leaves the real setup as it was."""
+    from renewal_risk.admin.api import secret_store_for
+    from renewal_risk.admin.auth import setup_token
+
+    errors = []
+    page.on("pageerror", lambda e: errors.append(str(e)))
+    before = (demo_config / "connectors.yaml").read_text(encoding="utf-8")
+    page.goto(f"{server}/admin/")
+    page.locator("input[type=radio][value=saas]").check()
+    page.locator("form input").nth(2).fill(setup_token(secret_store_for(ctx), ctx.store))
+    page.locator("input[type=email]").fill("admin@demo.example")
+    page.locator("input[type=password]").fill("long-enough-pw")
+    page.get_by_role("button", name="Create admin & continue").click()
+
+    checklist = page.locator(".checklist")
+    checklist.get_by_text("Get set up").wait_for()
+    assert "Connect Slack" in checklist.inner_text() and page.locator(".side .progress").count() == 1
+    checklist.get_by_role("button", name="Try with sample data").click()
+    banner = page.locator(".notice.warn", has_text="sample data. Your real setup is untouched")
+    banner.wait_for()
+
+    page.get_by_role("link", name="Accuracy").click()
+    page.get_by_role("button", name="Run backtest").click()
+    page.get_by_text("renewals that were lost or shrank").wait_for()
+    assert "Caught 2 of 3" in page.locator(".headline").inner_text()
+    assert page.locator("tr", has_text="Wayne Retail").get_by_text("not enough data").count() == 1
+
+    page.get_by_role("button", name="Switch back to your real setup").click()
+    page.get_by_role("heading", name="Data sources").wait_for()
+    page.locator(".checklist").wait_for()
+    assert banner.count() == 0
+    assert (demo_config / "connectors.yaml").read_text(encoding="utf-8") == before
+    assert errors == [], errors

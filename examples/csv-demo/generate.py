@@ -59,6 +59,12 @@ def build(root: Path, today: date) -> None:
         ["R005", "A005", "Stark Logistics", "Stark renewal", 200000, d(100), "Proposal", "false", d(-12), d(-40)],
         ["R006", "A006", "Wayne Retail", "Wayne renewal", 15000, d(20), "Commit", "false", d(-3), d(-45)],
         ["R007", "A003", "Initech", "Initech 2025 renewal", 48000, d(-335), "Closed Won", "true", d(-335), d(-400)],
+        # Closed renewals from a year+ ago, with the history before them: what the Accuracy backtest replays.
+        ["R101", "A001", "Acme Corp", "Acme 2025 renewal", 100000, d(-410), "Closed Won", "true", d(-410), d(-560)],
+        ["R102", "A002", "Globex", "Globex 2025 renewal", 180000, d(-430), "Closed Won", "true", d(-430), d(-600)],
+        ["R104", "A004", "Umbrella Health", "Umbrella 2025 renewal", 150000, d(-420), "Closed Lost", "true", d(-420), d(-600)],
+        ["R105", "A005", "Stark Logistics", "Stark 2025 renewal", 200000, d(-400), "Closed Won", "true", d(-400), d(-560)],
+        ["R106", "A006", "Wayne Retail", "Wayne 2025 renewal", 15000, d(-390), "Closed Lost", "true", d(-390), d(-480)],
     ])
     write("crm/contracts.csv", ["Id", "AccountId", "ARR", "Status", "StartDate", "EndDate", "CreatedDate"], [
         ["C001", "A001", 120000, "Activated", d(-320), d(45), d(-330)],
@@ -67,6 +73,8 @@ def build(root: Path, today: date) -> None:
         ["C004", "A004", 150000, "Activated", d(-290), d(75), d(-300)],
         ["C005", "A005", 200000, "Activated", d(-265), d(100), d(-270)],
         ["C006", "A006", 15000, "Activated", d(-345), d(20), d(-350)],
+        ["C101", "A001", 140000, "Expired", d(-775), d(-410), d(-780)],  # Acme renewed smaller: 140k -> 100k
+        ["C102", "A002", 150000, "Expired", d(-795), d(-430), d(-800)],
     ])
     write("crm/line_items.csv", ["Id", "AccountId", "Product", "Quantity", "Status", "CreatedDate", "LastModifiedDate"], [
         ["L001", "A001", "Platform seats", 120, "Installed", d(-320), d(-30)],
@@ -149,6 +157,13 @@ def build(root: Path, today: date) -> None:
         ["7021", "9003", "solved", "low", "", 5, d(-100), d(-95)],
         # Stark: one open normal
         ["7051", "9005", "open", "normal", "", "", d(-8), d(-1)],
+        # A year+ ago, before the 2025 renewals: Acme and Umbrella escalated and unhappy, Stark too (renewed anyway).
+        ["7101", "9001", "solved", "high", "escalated", 1, d(-560), d(-540)],
+        ["7102", "9001", "solved", "urgent", "escalated", "", d(-530), d(-520)],
+        ["7141", "9004", "solved", "high", "escalated", 1, d(-560), d(-545)],
+        ["7142", "9004", "solved", "urgent", "escalated", 2, d(-525), d(-515)],
+        ["7151", "9005", "solved", "high", "escalated", 2, d(-540), d(-530)],
+        ["7152", "9005", "solved", "normal", "escalated", "", d(-520), d(-505)],
     ]
     write("support/tickets.csv", ["id", "organization_id", "status", "priority", "tags", "satisfaction", "created_at", "updated_at"], tickets)
 

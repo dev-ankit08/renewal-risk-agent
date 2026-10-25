@@ -75,8 +75,8 @@ function renderOne(r) {
   const actions = (r.recommended_actions || []).map(a => `<li><strong>${esc(a.action)}</strong> — ${esc(a.owner_role)}, ${esc(a.priority)} priority, within ${a.due_in_days} days</li>`).join('');
   const signals = (r.signals || []).map(s => `<tr><td>${badge(s.severity)}</td><td>${esc(s.name)}</td><td>${esc(s.value)}<br><code>${esc(s.evidence_ref)}</code>${s.how_calculated ? `<div class="muted"><em>How it's calculated:</em> ${esc(s.how_calculated)}</div>` : ''}</td></tr>`).join('');
   $('results').innerHTML = `<div class="card">
-    <h2>${esc(r.account_name)} ${badge(r.band, r.score)}</h2>
-    ${r.abstained ? '<p><em>Low confidence — not enough data for a firm score.</em></p>' : ''}
+    <h2>${esc(r.account_name)} ${r.abstained ? '<span class="badge">not enough data</span>' : badge(r.band, r.score)}</h2>
+    ${r.coverage && r.coverage.total ? `<p class="muted">${r.coverage.checked} of ${r.coverage.total} warning signs could be checked${r.abstained ? ' — too few to call this account low risk.' : '.'}</p>` : ''}
     <p>${esc(r.rationale)}</p>
     <h3>Recommended actions</h3><ul>${actions || '<li>none</li>'}</ul>
     <h3>Evidence</h3><table>${signals || '<tr><td>No signals.</td></tr>'}</table>
@@ -87,7 +87,7 @@ function renderOne(r) {
 function renderMany(r) {
   const rows = r.rows.map(row => `<tr><td>${esc(row.name)}</td><td>${esc(row.close_date)}</td>
     <td>${row.amount != null ? Number(row.amount).toLocaleString() : ''}</td>
-    <td>${badge(row.band, row.score)} ${row.band_source === 'screen' ? '<code>screen only</code>' : ''}</td>
+    <td>${row.band_source === 'not_enough_data' ? '<span class="badge">not enough data</span>' : badge(row.band, row.score)} ${row.band_source === 'screen' ? '<code>screen only</code>' : ''}</td>
     <td>${esc(row.assessment ? row.assessment.rationale : (row.screen ? row.screen.signals.map(s => s.value).join('; ') : row.error || ''))}</td></tr>`).join('');
   $('results').innerHTML = `<p><strong>${esc(r.label)}</strong> (${esc(r.window_start)} – ${esc(r.window_end)}): ${r.renewals_in_window} renewal(s) you can see, ${r.assessed_now} assessed now${r.cost_usd ? ' ($' + r.cost_usd + ')' : ''}.</p>
     ${r.not_assessed_flagged ? `<div class="notice">${r.not_assessed_flagged} more flagged account(s) were screened but not fully assessed (per-question cap).</div>` : ''}
