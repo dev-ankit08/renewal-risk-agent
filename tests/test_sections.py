@@ -53,7 +53,7 @@ def test_csv_section_end_to_end(admin, demo_config, tmp_path):
     assert admin.put("/admin/api/sources/surveys", json={"type": "csv", "test_data": True}).json()["ok"]
     up = admin.post("/admin/api/sources/surveys/upload", files={"file": ("surveys.csv", rows.encode(), "text/csv")}).json()
     assert up["columns"] == ["id", "account_id", "score", "responded_at"]
-    assert admin.put("/admin/api/sources/surveys/csv-entity", json={"entity": "survey", "file": "surveys.csv", "match": "account_id"}).json()["ok"]
+    assert admin.put("/admin/api/assign/survey", json={"source": "surveys", "object": "surveys.csv", "link": "account_id"}).json()["ok"]
     fields = {"id": "id", "score": "score | num", "responded_at": "responded_at | date", "created_at": "responded_at | date"}
     assert admin.put("/admin/api/mapping/surveys/survey", json={"fields": fields}).json()["ok"]
 
@@ -114,10 +114,10 @@ def test_sql_rest_mcp_and_salesforce_connections(admin, demo_config, tmp_path):
     # Salesforce objects need a Salesforce connection; the demo has none.
     sf = {"kind": "salesforce", "source": "crm", "object": "Survey__c", "account_field": "Account__c"}
     assert admin.post("/admin/api/sections/customer_surveys/connect", json=sf).status_code == 400
-    assert admin.get("/admin/api/sources/crm/objects/Survey__c/fields").status_code == 400
+    assert admin.get("/admin/api/sources/crm/objects/Survey__c/fields").status_code == 502  # the demo CRM is CSV: no such file
 
 
-def test_salesforce_object_goes_to_the_overrides_file(admin, demo_config, monkeypatch):
+def test_salesforce_object_is_assigned(admin, demo_config, monkeypatch):
     from renewal_risk.service.context import get_context
 
     assert admin.put("/admin/api/sections/customer_surveys", json=SURVEYS).json()["ok"]
@@ -125,6 +125,5 @@ def test_salesforce_object_goes_to_the_overrides_file(admin, demo_config, monkey
     sf = {"kind": "salesforce", "source": "crm", "object": "Survey__c", "account_field": "Account__c"}
     assert admin.post("/admin/api/sections/customer_surveys/connect", json={**sf, "object": "Survey__c; DROP"}).status_code == 400
     assert admin.post("/admin/api/sections/customer_surveys/connect", json=sf).json()["ok"]
-    overrides = yaml.safe_load((demo_config / "mappings" / "crm.overrides.yaml").read_text(encoding="utf-8"))
-    assert overrides["survey"]["fetch"] == {"object": "Survey__c", "account_field": "Account__c"}
-    assert overrides["survey"]["fields"]["id"] == "Id"
+    assign = yaml.safe_load((demo_config / "connectors.yaml").read_text(encoding="utf-8"))["assign"]
+    assert assign["survey"] == {"source": "crm", "object": "Survey__c", "link": "Account__c"}

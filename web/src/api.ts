@@ -41,6 +41,7 @@ export interface Status {
   callback_url: string;
   model_configured: boolean;
   workspace: Workspace;
+  matching_needed: boolean; // a second system keeps its own customer list
 }
 
 export interface Workspace {
@@ -141,7 +142,7 @@ export interface Category {
   entities: string[];
   required: boolean;
   systems: SystemOption[];
-  configured_sources: string[];
+  rows: DataTypeRow[];            // one per data type: which system and object it is read from
   custom?: boolean;               // an admin-defined section (sections.yaml)
   section?: Section;
 }
@@ -166,9 +167,37 @@ export interface Catalog {
   pack: { name: string; label: string; description: string; terminology: Record<string, string> };
   packs: { name: string; label: string; description: string }[];
   categories: Category[];
-  generic: { type: string; label: string; description: string }[];
   salesforce_sources: string[];  // Salesforce connections a custom section can read an object from
+  connected: Connected[];        // systems signed in once, usable by every section
+  systems: SystemOption[];       // every system that can be connected
   callback_url: string;
+}
+
+export interface Connected {
+  name: string;
+  label: string;
+  kind: "salesforce" | "sql" | "csv" | "hubspot" | null;  // null: no object picker (REST, MCP)
+}
+
+// Where one data type is read from: a locked choice, or today's default.
+export interface DataTypeRow {
+  entity: string;
+  locked: boolean;
+  source: string | null;
+  object: string | null;
+  link?: string;
+  missing?: string[];  // locked rows: required fields not mapped yet (empty = mapped)
+}
+
+export interface SystemObject {
+  name: string;
+  label: string;
+}
+
+export interface ObjectField {
+  name: string;
+  label: string;
+  link: boolean;  // can tie a record to its customer
 }
 
 export interface SourceInfo {
@@ -262,7 +291,8 @@ export type SignalSpec = { name: string; description?: string; specialist?: stri
 export interface SignalRow {
   name: string;
   description: string;
-  specialist: string;
+  specialist: string;  // the section (= AI specialist) holding its data
+  area: string;        // that section's name
   origin: "built-in" | "custom";
   enabled: boolean;
   rule: string;
@@ -288,7 +318,6 @@ export interface Builder {
   operators: Record<string, string>;
   severities: string[];
   entities: Record<string, Record<string, FieldDoc>>;
-  specialists: string[];
 }
 
 export interface SignalTest {
@@ -351,4 +380,27 @@ export interface ActionSettings {
   min_band: string;
   snooze_days: number;
   cooldown_days: number;
+}
+
+// AI agents: coordinator -> one specialist per data section -> synthesis.
+export interface AgentInfo {
+  key: string;
+  instructions: string;
+  default: string;
+  preview: string;  // the full prompt, read-only: the safety rules are fixed
+}
+
+export interface SpecialistInfo extends AgentInfo {
+  label: string;
+  entities: string[];
+  custom: boolean;
+  has_data: boolean;
+  signals: string[];
+}
+
+export interface Agents {
+  coordinator: AgentInfo;
+  specialists: SpecialistInfo[];
+  synthesis: AgentInfo;
+  ai_enabled: boolean;
 }

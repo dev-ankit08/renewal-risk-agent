@@ -136,6 +136,10 @@ class Linker:
             return True
         return any(r.get("match") == "same_id" for r in self.rules_for(source))
 
+    def needs_matching(self) -> bool:
+        """True when some system keeps its own customer list, so its records must be matched to the primary accounts."""
+        return any(not self.is_same_id(s) for s in self.settings.sources if s != self.settings.primary)
+
     # -- building ------------------------------------------------------------
 
     def build(self, only: list[str] | None = None) -> LinkReport:
@@ -255,6 +259,9 @@ class Linker:
         self.cache_path.write_text(json.dumps(report.to_json(), indent=1), encoding="utf-8")
 
     def report(self, refresh: bool = False) -> LinkReport | None:
+        """The current matches; None when every system already uses the primary account ids."""
+        if not self.needs_matching():
+            return None
         with self._lock:
             if self._report is None and self.cache_path.exists():
                 try:
@@ -268,9 +275,6 @@ class Linker:
             or (self.manual_path.exists() and self.manual_path.stat().st_mtime > report.built_at)
         )
         if refresh or stale:
-            needs_rules = any(not self.is_same_id(s) for s in self.settings.sources if s != self.settings.primary)
-            if not needs_rules:
-                return None
             return self.build()
         return report
 

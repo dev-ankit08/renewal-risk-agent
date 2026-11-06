@@ -25,6 +25,14 @@ REQUIRED = {
 }
 AUTO_ACCEPT = 0.85
 
+
+def missing_required(entity: str, block) -> list[str]:
+    """Required standard fields a source's read config for `entity` does not map yet."""
+    if isinstance(block, list):  # several blocks (a union): each maps its own fields
+        return []
+    fields = (block or {}).get("fields") or {}
+    return [f for f in ["id"] + REQUIRED.get(entity, []) if fields.get(f) is None]
+
 _STOP = {"the", "of", "a", "an", "to", "is", "in", "on", "at", "no", "for", "and", "or", "by", "id", "c", "r", "hs", "pse", "this", "that", "record"}
 _COMPATIBLE = {
     "str": {"str", "string", "picklist", "text", "reference", "id", "email", "enumeration", "option"},

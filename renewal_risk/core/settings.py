@@ -34,10 +34,12 @@ from pathlib import Path
 import yaml
 from dotenv import load_dotenv
 
+from .objects import apply as apply_assignments
 from .playbooks import normalize as normalize_playbooks
 from .sections import apply as apply_sections
 from .sections import normalize as normalize_sections
 from .sections import reserved_names as reserved_section_names
+from .sections import section_of, specialists_for
 
 load_dotenv()  # .env in the working directory, never overrides real env vars
 
@@ -315,10 +317,9 @@ def load_settings(cfg_dir: Path | str | None = None, tenant_id: str = "default",
         problems.append(f"agent.yaml: unknown pack '{pack_name}' (known: {', '.join(packs)})")
     pack = {"name": pack_name, **pack}
     agent = deep_merge(deep_merge(defaults_agent, pack.get("agent") or {}), user_agent)
-    if pack.get("specialists"):  # a pack replaces the specialist set; the company's agent.yaml can still override
-        agent["specialists"] = deep_merge(pack["specialists"], user_agent.get("specialists") or {})
     sections = normalize_sections(read_yaml(cfg_dir / "sections.yaml"), reserved_section_names(agent, pack), problems)
     apply_sections(sections, agent, pack)  # before sources resolve: they may provide the new data types
+    agent["specialists"] = specialists_for(pack.get("categories") or [], agent.get("agents") or {})  # one per section
 
     connectors = read_yaml(cfg_dir / "connectors.yaml")
     if not connectors:
@@ -326,15 +327,18 @@ def load_settings(cfg_dir: Path | str | None = None, tenant_id: str = "default",
     presets = load_presets(cfg_dir)
     raw_sources = connectors.get("sources") or {}
     sources: dict[str, dict] = {}
+    all_overrides: dict[str, dict] = {}
     for name, raw in raw_sources.items():
-        overrides = read_yaml(cfg_dir / "mappings" / f"{name}.overrides.yaml")
+        overrides = all_overrides[name] = read_yaml(cfg_dir / "mappings" / f"{name}.overrides.yaml")
         resolved, source_problems = resolve_source(name, raw, presets, overrides, missing_env, secrets)
         problems.extend(source_problems)
         if resolved:
             resolved["_config_dir"] = str(cfg_dir)
             resolved["_state_dir"] = str(state)
             resolved["_tenant_id"] = tenant_id
+            resolved["_preset"] = (raw or {}).get("preset")
             sources[name] = resolved
+    apply_assignments(connectors.get("assign") or {}, sources, all_overrides, problems)  # each data type from its chosen object
 
     primary = connectors.get("primary")
     if sources and not primary:
@@ -353,7 +357,7 @@ def load_settings(cfg_dir: Path | str | None = None, tenant_id: str = "default",
         primary=primary,
         linking=connectors.get("linking") or {},
         agent=agent,
-        signals=_load_signals(cfg_dir, pack),
+        signals=[{**s, "specialist": section_of(s, pack.get("categories") or [])} for s in _load_signals(cfg_dir, pack)],
         playbooks=playbooks,
         access=access,
         slack=slack,

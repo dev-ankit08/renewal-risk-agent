@@ -24,20 +24,12 @@ from ..core.pipeline import AccountLookupError, Engine, PolicyError
 BAND_ORDER = {"low": 0, "medium": 1, "high": 2}
 
 
-def screen_band(screen: dict) -> str:
-    if screen["high_count"]:
-        return "high"
-    if screen["medium_count"]:
-        return "medium"
-    return "low"
-
-
 def assessment_view(result: dict) -> dict:
     """The shape every interface renders (API JSON, Slack blocks, CLI)."""
     a = result["assessment"]
     how = result.get("explanations") or {}
     signals = [
-        {**s, "specialist": p["specialist"], "how_calculated": how.get(s["name"], "")}
+        {**s, "specialist": p["specialist"], "area": p.get("label") or p["specialist"], "how_calculated": how.get(s["name"], "")}
         for p in result.get("packets", []) for s in p.get("signals", [])
     ]
     signals.sort(key=lambda s: -BAND_ORDER.get(s["severity"], 0))
@@ -197,7 +189,7 @@ class RiskService:
             elif row["assessment"]:
                 row["band"], row["score"], row["band_source"] = row["assessment"]["band"], row["assessment"]["score"], "assessment"
             elif row.get("screen"):
-                row["band"], row["score"], row["band_source"] = screen_band(row["screen"]), None, "screen"
+                row["band"], row["score"], row["band_source"] = row["screen"]["band"], row["screen"]["score"], "screen"
             else:
                 row["band"], row["score"], row["band_source"] = None, None, "error"
         minimum = {"any": 0, "medium_or_high": 1, "high": 2}.get(band_filter, 0)

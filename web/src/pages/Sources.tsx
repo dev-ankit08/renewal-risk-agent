@@ -2,14 +2,15 @@ import { useState } from "react";
 import { api, AuthMethod, Catalog, Category, SaveResult, Section, SourceInfo, Status, SystemOption } from "../api";
 import Checklist from "../Checklist";
 import { go, label, Modal, Notice, SaveFeedback, useLoad } from "../ui";
-import CsvModal from "./sources/CsvModal";
+import DataTypeRow from "./sources/DataTypeRow";
 import SectionConnect from "./sources/SectionConnect";
 import SectionModal from "./sources/SectionModal";
 
-export default function SourcesPage({ params, status, onPackChange }: { params: URLSearchParams; status: Status; onPackChange: () => void }) {
+export default function SourcesPage({ params, status, onChange }: { params: URLSearchParams; status: Status; onChange: () => void }) {
   const catalog = useLoad(() => api.get<Catalog>("/catalog"));
   const sources = useLoad(() => api.get<{ sources: SourceInfo[]; primary: string }>("/sources"));
-  const [adding, setAdding] = useState<Category | null>(null);
+  const [connecting, setConnecting] = useState(false);
+  const [restFor, setRestFor] = useState<Category | null>(null);
   const [editing, setEditing] = useState<Section | null | "new">(null);
   const [result, setResult] = useState<SaveResult | null>(null);
   const [tests, setTests] = useState<Record<string, { ok: boolean; detail: string } | "running">>({});
@@ -18,34 +19,39 @@ export default function SourcesPage({ params, status, onPackChange }: { params: 
     catalog.reload();
     sources.reload();
   };
+  const saved = (r: SaveResult) => { setResult(r); reload(); onChange(); }; // the sidebar depends on what is connected
+  const fail = (e: Error) => setResult({ ok: false, errors: [e.message], warnings: [] });
   const test = (name: string) => {
     setTests((t) => ({ ...t, [name]: "running" }));
     api.post<{ ok: boolean; detail: string }>(`/sources/${name}/test`).then((r) => setTests((t) => ({ ...t, [name]: r })));
   };
   const connectOAuth = (name: string) =>
-    api.post<{ authorize_url: string }>(`/sources/${name}/oauth/start`).then((r) => (window.location.href = r.authorize_url))
-      .catch((e: Error) => setResult({ ok: false, errors: [e.message], warnings: [] }));
+    api.post<{ authorize_url: string }>(`/sources/${name}/oauth/start`).then((r) => (window.location.href = r.authorize_url)).catch(fail);
   const remove = (name: string) => {
-    if (!confirm(`Remove the source "${name}" and its stored credentials?`)) return;
-    api.del<SaveResult>(`/sources/${name}`).then((r) => { setResult(r); reload(); });
+    if (!confirm(`Remove the system "${name}" and its stored credentials? Data types read from it will need a new object.`)) return;
+    api.del<SaveResult>(`/sources/${name}`).then(saved).catch(fail);
+  };
+  const upload = (name: string, file: File | undefined) => {
+    if (!file) return;
+    const form = new FormData();
+    form.append("file", file);
+    api.post(`/sources/${name}/upload`, form).then(() => saved({ ok: true, errors: [], warnings: [], note: `${file.name} uploaded to ${name}.` })).catch(fail);
   };
   const removeSection = (c: Category) => {
     if (!confirm(`Delete the section "${c.label}"? Its connections and specialist are removed; the data in your systems is untouched.`)) return;
-    api.del<SaveResult>(`/sections/${c.key}`).then((r) => { setResult(r); reload(); })
-      .catch((e: Error) => setResult({ ok: false, errors: [e.message], warnings: [] }));
+    api.del<SaveResult>(`/sections/${c.key}`).then(saved).catch(fail);
   };
-  const changePack = (pack: string) =>
-    api.put<SaveResult>("/pack", { pack }).then((r) => { setResult(r); onPackChange(); reload(); });
+  const changePack = (pack: string) => api.put<SaveResult>("/pack", { pack }).then(saved);
 
-  const byName = Object.fromEntries((sources.data?.sources ?? []).map((s) => [s.name, s]));
   const cat = catalog.data;
+  const connected = cat?.connected ?? [];
 
   return (
     <>
       <div className="row">
         <div>
           <h2>Data sources</h2>
-          <p className="lead">Pick where each kind of data lives, sign in, and test the connection.</p>
+          <p className="lead">Connect each system once, then choose for every kind of data which object it is read from.</p>
         </div>
         <span className="spacer" />
         <button onClick={() => setEditing("new")}>+ Add section</button>
@@ -58,11 +64,44 @@ export default function SourcesPage({ params, status, onPackChange }: { params: 
           </label>
         )}
       </div>
-      {params.get("connected") && <Notice kind="ok">Connected {params.get("connected")}. Test it, then map its fields.</Notice>}
+      {params.get("connected") && <Notice kind="ok">Connected {params.get("connected")}. Now pick its objects in the sections below.</Notice>}
       {params.get("oauth_error") && <Notice kind="bad">Sign-in failed: {params.get("oauth_error")}</Notice>}
       <Checklist />
       <SaveFeedback result={result} />
       {(catalog.error || sources.error) && <Notice kind="bad">{catalog.error || sources.error}</Notice>}
+
+      <div className="card">
+        <div className="row">
+          <h3>Connected systems</h3>
+          <span className="spacer" />
+          <button className="primary" onClick={() => setConnecting(true)}>+ Connect a system</button>
+        </div>
+        <p className="muted">Sign in once; every section below can then read any of these systems.</p>
+        {(sources.data?.sources ?? []).length === 0 && <p className="muted">Nothing connected yet.</p>}
+        {(sources.data?.sources ?? []).map((s) => {
+          const t = tests[s.name] ?? s.last_test;
+          const needsOAuth = s.auth_method === "oauth2" && !s.connection.oauth_connected;
+          return (
+            <div key={s.name} className="row dtrow">
+              <strong>{s.name}</strong>
+              <span className="muted">{connected.find((c) => c.name === s.name)?.label ?? s.preset ?? s.type}</span>
+              {s.primary && <span className="badge">customer list</span>}
+              {!s.connection.credentials_complete && <span className="badge bad">missing {s.connection.missing.join(", ")}</span>}
+              {needsOAuth && <span className="badge warn">sign-in needed</span>}
+              {t === "running" && <span className="badge">testing…</span>}
+              {t && t !== "running" && <span className={`badge ${t.ok ? "ok" : "bad"}`} title={t.detail}>{t.ok ? "test OK" : "test failed"}</span>}
+              <span className="spacer" />
+              {s.type === "csv" && (
+                <label className="inline">Upload a file <input type="file" accept=".csv,.xlsx" onChange={(e) => upload(s.name, e.target.files?.[0])} style={{ width: "auto" }} aria-label={`upload to ${s.name}`} /></label>
+              )}
+              {s.auth_method === "oauth2" && <button className={needsOAuth ? "primary" : ""} onClick={() => connectOAuth(s.name)}>{needsOAuth ? "Sign in" : "Reconnect"}</button>}
+              <button onClick={() => test(s.name)}>Test</button>
+              <button className="danger" onClick={() => remove(s.name)}>Remove</button>
+              {t && t !== "running" && !t.ok && <div className="notice bad small" style={{ width: "100%" }}>{t.detail}</div>}
+            </div>
+          );
+        })}
+      </div>
 
       {cat?.categories.map((c) => (
         <div className="card" key={c.key}>
@@ -70,16 +109,17 @@ export default function SourcesPage({ params, status, onPackChange }: { params: 
             <h3>{c.label}</h3>
             {c.custom && <span className="badge ok">custom section</span>}
             {c.required && <span className="badge">required</span>}
-            {c.configured_sources.length > 0 ? <span className="badge ok">connected</span> : <span className="badge warn">not connected</span>}
+            {c.rows.every((r) => r.locked) ? <span className="badge ok">objects locked</span>
+              : c.rows.some((r) => r.source) ? <span className="badge">using defaults</span> : <span className="badge warn">not connected</span>}
             <span className="spacer" />
             {c.custom && c.section && (
               <>
                 <button onClick={() => setEditing(c.section!)}>Edit</button>
-                <button onClick={() => go(`signals?new=${c.entities[0]}&specialist=${c.key}`)}>+ Add warning sign</button>
+                <button onClick={() => go(`signals?new=${c.entities[0]}`)}>+ Add warning sign</button>
+                <button onClick={() => setRestFor(c)}>+ REST / MCP</button>
                 <button className="danger" onClick={() => removeSection(c)}>Delete</button>
               </>
             )}
-            <button onClick={() => setAdding(c)}>+ Connect a system</button>
           </div>
           <p className="muted">{c.description}</p>
           {c.section && (
@@ -89,53 +129,26 @@ export default function SourcesPage({ params, status, onPackChange }: { params: 
               <br /><span className="muted">Its specialist looks for:</span> {c.section.focus}
             </p>
           )}
-          {c.configured_sources.map((name) => {
-            const s = byName[name];
-            if (!s) return null;
-            const t = tests[name] ?? s.last_test;
-            const needsOAuth = s.auth_method === "oauth2" && !s.connection.oauth_connected;
-            return (
-              <div key={name} className="row" style={{ borderTop: "1px solid var(--line)", paddingTop: 10, marginTop: 8 }}>
-                <strong>{name}</strong>
-                <span className="muted">{s.preset ?? s.type}</span>
-                {s.primary && <span className="badge">primary account list</span>}
-                {!s.connection.credentials_complete && <span className="badge bad">missing {s.connection.missing.join(", ")}</span>}
-                {needsOAuth && <span className="badge warn">sign-in needed</span>}
-                {t === "running" && <span className="badge">testing…</span>}
-                {t && t !== "running" && <span className={`badge ${t.ok ? "ok" : "bad"}`} title={t.detail}>{t.ok ? "test OK" : "test failed"}</span>}
-                <span className="spacer" />
-                {s.auth_method === "oauth2" && <button className={needsOAuth ? "primary" : ""} onClick={() => connectOAuth(name)}>{needsOAuth ? "Sign in" : "Reconnect"}</button>}
-                <button onClick={() => test(name)}>Test</button>
-                <button onClick={() => go(`mapping/${name}`)}>Map fields</button>
-                {!s.primary && <button onClick={() => api.put<SaveResult>("/primary", { source: name }).then((r) => { setResult(r); reload(); })}>Make primary</button>}
-                <button className="danger" onClick={() => remove(name)}>Remove</button>
-                {t && t !== "running" && !t.ok && <div className="notice bad small" style={{ width: "100%" }}>{t.detail}</div>}
-              </div>
-            );
-          })}
+          {c.rows.map((r) => <DataTypeRow key={`${r.entity}:${r.source}:${r.object}:${r.locked}`} row={r} connected={connected} onSaved={saved} />)}
         </div>
       ))}
 
       {editing && (
         <SectionModal section={editing === "new" ? null : editing} salesforce={cat?.salesforce_sources ?? []}
-          onClose={() => setEditing(null)} onSaved={(r) => { setEditing(null); setResult(r); reload(); }} />
+          onClose={() => setEditing(null)} onSaved={(r) => { setEditing(null); saved(r); }} />
       )}
-      {adding?.custom && (
-        <SectionConnect category={adding} salesforce={cat?.salesforce_sources ?? []} onClose={() => setAdding(null)} onSaved={(r, name) => { setAdding(null); setResult(r); reload(); if (name) test(name); }} />
-      )}
-      {adding && !adding.custom && cat && (
+      {restFor && <SectionConnect category={restFor} onClose={() => setRestFor(null)} onSaved={(r, name) => { setRestFor(null); saved(r); test(name); }} />}
+      {connecting && cat && (
         <ConnectModal
-          category={adding}
-          catalog={cat}
-          existing={Object.keys(byName)}
+          systems={cat.systems}
+          existing={(sources.data?.sources ?? []).map((s) => s.name)}
           callbackUrl={status.callback_url}
-          onClose={() => setAdding(null)}
+          onClose={() => setConnecting(false)}
           onSaved={(r, name, oauth) => {
-            setAdding(null);
-            setResult(r);
-            reload();
+            setConnecting(false);
+            saved(r);
             if (oauth) connectOAuth(name);
-            else if (name) test(name);
+            else test(name);
           }}
         />
       )}
@@ -143,65 +156,68 @@ export default function SourcesPage({ params, status, onPackChange }: { params: 
   );
 }
 
+// Connect one system: a ready-made one (sign in), a database (connection string) or CSV / Excel files.
 function ConnectModal(props: {
-  category: Category; catalog: Catalog; existing: string[]; callbackUrl: string;
+  systems: SystemOption[]; existing: string[]; callbackUrl: string;
   onClose: () => void; onSaved: (r: SaveResult, name: string, oauth: boolean) => void;
 }) {
-  const { category } = props;
-  const [choice, setChoice] = useState<string>(category.systems[0]?.preset ?? "csv");
-  const system: SystemOption | undefined = category.systems.find((s) => s.preset === choice);
-  const [name, setName] = useState(category.key);
+  const [choice, setChoice] = useState<string>(props.systems[0]?.preset ?? "csv");
+  const system = props.systems.find((s) => s.preset === choice);
+  const [name, setName] = useState(choice);
   const [method, setMethod] = useState<string>(system?.auth_methods[0]?.method ?? "");
   const [values, setValues] = useState<Record<string, string>>({});
-  const [also, setAlso] = useState<Record<string, boolean>>({});
+  const [file, setFile] = useState<File | null>(null);
   const [testData, setTestData] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const auth: AuthMethod | undefined = system?.auth_methods.find((m) => m.method === method) ?? system?.auth_methods[0];
 
-  const pick = (preset: string) => {
-    setChoice(preset);
-    const s = category.systems.find((x) => x.preset === preset);
-    setMethod(s?.auth_methods[0]?.method ?? "");
+  const pick = (value: string) => {
+    setChoice(value);
+    setName(value === "sql" ? "database" : value === "csv" ? "files" : value);
+    setMethod(props.systems.find((x) => x.preset === value)?.auth_methods[0]?.method ?? "");
     setValues({});
-    setAlso({});
   };
 
-  const picker = (
-    <>
-      <label>System</label>
-      <select value={choice} onChange={(e) => pick(e.target.value)}>
-        {category.systems.map((s) => <option key={s.preset} value={s.preset}>{s.label}</option>)}
-        <option value="csv">CSV / Excel upload</option>
-      </select>
-    </>
-  );
-  if (choice === "csv") return <CsvModal category={category} picker={picker} name={name} setName={setName} onClose={props.onClose} onSaved={props.onSaved} />;
-
-  const otherEntities = system ? allPresetEntities(props.catalog, system.preset).filter((e) => !category.entities.includes(e)) : [];
-  const save = () => {
-    if (!system || !auth) return;
-    if (props.existing.includes(name) && !confirm(`A source named "${name}" exists. Replace its settings?`)) return;
-    const params: Record<string, string> = {};
-    const secrets: Record<string, string> = {};
-    for (const p of auth.params) {
-      const v = values[p.name] ?? (p.default ?? "");
-      if (v) (p.secret ? secrets : params)[p.name] = v;
+  const save = async () => {
+    if (props.existing.includes(name) && !confirm(`A system named "${name}" exists. Replace its settings?`)) return;
+    setBusy(true); setError(null);
+    try {
+      if (system && auth) {
+        const params: Record<string, string> = {};
+        const secrets: Record<string, string> = {};
+        for (const p of auth.params) {
+          const v = values[p.name] ?? (p.default ?? "");
+          if (v) (p.secret ? secrets : params)[p.name] = v;
+        }
+        props.onSaved(await api.put<SaveResult>(`/sources/${name}`, { preset: system.preset, auth_method: auth.method, params, secrets, test_data: testData }), name, auth.oauth);
+      } else {
+        const r = await api.put<SaveResult>(`/sources/${name}`, { type: choice, secrets: { dsn: values.dsn ?? "" }, test_data: testData });
+        if (choice === "csv" && file) {
+          const form = new FormData();
+          form.append("file", file);
+          await api.post(`/sources/${name}/upload`, form);
+        }
+        props.onSaved(r, name, false);
+      }
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
     }
-    const disabled = otherEntities.filter((e) => also[e] === false);
-    setBusy(true);
-    api.put<SaveResult>(`/sources/${name}`, { preset: system.preset, auth_method: auth.method, params, secrets, disabled_entities: disabled, test_data: testData })
-      .then((r) => props.onSaved(r, name, auth.oauth))
-      .catch((e: Error) => setError(e.message))
-      .finally(() => setBusy(false));
   };
 
   return (
-    <Modal title={`Connect: ${category.label}`} onClose={props.onClose}>
-      {picker}
+    <Modal title="Connect a system" onClose={props.onClose}>
+      <label>System</label>
+      <select value={choice} onChange={(e) => pick(e.target.value)} aria-label="system">
+        {props.systems.map((s) => <option key={s.preset} value={s.preset}>{s.label}</option>)}
+        <option value="sql">Database (SQL)</option>
+        <option value="csv">CSV / Excel files</option>
+      </select>
       {system && <p className="muted small">{system.description}</p>}
-      <label>Source name <span className="hint">— a short id, e.g. crm, billing, support</span></label>
-      <input value={name} onChange={(e) => setName(e.target.value.toLowerCase().replace(/[^a-z0-9_]/g, ""))} />
+      <label>Name <span className="hint">— a short id, e.g. crm, billing, support</span></label>
+      <input value={name} onChange={(e) => setName(e.target.value.toLowerCase().replace(/[^a-z0-9_]/g, ""))} aria-label="system name" />
       {system && system.auth_methods.length > 1 && (
         <>
           <label>How to sign in</label>
@@ -218,27 +234,23 @@ function ConnectModal(props: {
       {auth?.oauth && <p className="small">Callback URL to register: <code>{props.callbackUrl}</code></p>}
       {auth?.params.map((p) => (
         <div key={p.name}>
-          <label>
-            {p.label}
-            {p.required && " *"} {p.description && <span className="hint">— {p.description}</span>}
-          </label>
-          <input
-            type={p.secret ? "password" : "text"}
-            autoComplete="off"
+          <label>{p.label}{p.required && " *"} {p.description && <span className="hint">— {p.description}</span>}</label>
+          <input type={p.secret ? "password" : "text"} autoComplete="off" value={values[p.name] ?? ""}
             placeholder={p.secret ? "stored encrypted; never written to config files" : p.default ?? ""}
-            value={values[p.name] ?? ""}
-            onChange={(e) => setValues({ ...values, [p.name]: e.target.value })}
-          />
+            onChange={(e) => setValues({ ...values, [p.name]: e.target.value })} />
         </div>
       ))}
-      {otherEntities.length > 0 && (
+      {choice === "sql" && (
         <>
-          <label>{system?.label} can also provide — use it for these too?</label>
-          {otherEntities.map((e) => (
-            <label key={e} style={{ fontWeight: 400 }}>
-              <input type="checkbox" checked={also[e] !== false} onChange={(ev) => setAlso({ ...also, [e]: ev.target.checked })} /> {label(e)}
-            </label>
-          ))}
+          <label>Connection string (DSN) <span className="hint">— e.g. postgresql+psycopg://reader:…@host/db; stored encrypted</span></label>
+          <input type="password" autoComplete="off" value={values.dsn ?? ""} onChange={(e) => setValues({ ...values, dsn: e.target.value })} aria-label="dsn" />
+          <p className="muted small">Read-only: only SELECT queries are ever run. Its tables appear as objects in each section.</p>
+        </>
+      )}
+      {choice === "csv" && (
+        <>
+          <label>First file <span className="hint">— more can be uploaded later; each file appears as an object</span></label>
+          <input type="file" accept=".csv,.xlsx" onChange={(e) => setFile(e.target.files?.[0] ?? null)} aria-label="first file" />
         </>
       )}
       <label style={{ fontWeight: 400 }}>
@@ -252,10 +264,4 @@ function ConnectModal(props: {
       </div>
     </Modal>
   );
-}
-
-function allPresetEntities(catalog: Catalog, preset: string): string[] {
-  const out = new Set<string>();
-  for (const c of catalog.categories) for (const s of c.systems) if (s.preset === preset) s.provides.forEach((e) => out.add(e));
-  return [...out];
 }

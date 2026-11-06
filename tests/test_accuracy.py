@@ -91,7 +91,7 @@ def test_setup_checklist_and_auto_map(admin, demo_config):
     assert admin.put("/admin/api/sources/legacy", json={"type": "csv", "test_data": True}).json()["ok"]
     rows = "TicketNo,AccountId,State,Severity,OpenedOn\nT1,A001,Open,P1,2026-01-02\n"
     admin.post("/admin/api/sources/legacy/upload", files={"file": ("tickets.csv", rows.encode(), "text/csv")})
-    assert admin.put("/admin/api/sources/legacy/csv-entity", json={"entity": "ticket", "file": "tickets.csv", "match": "AccountId"}).json()["ok"]
+    assert admin.put("/admin/api/assign/ticket", json={"source": "legacy", "object": "tickets.csv", "link": "AccountId"}).json()["ok"]
     assert not {i["key"]: i for i in admin.get("/admin/api/setup/checklist").json()["items"]}["mapping"]["done"]
     result = admin.post("/admin/api/mapping/auto").json()
     legacy = next(m for m in result["mappings"] if m["source"] == "legacy")

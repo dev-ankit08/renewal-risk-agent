@@ -164,12 +164,12 @@ def evidence_modal(view: dict, sources: dict | None = None) -> dict:
 
     by_area: dict[str, list[dict]] = {}
     for s in view.get("signals") or []:
-        by_area.setdefault(s.get("specialist") or "general", []).append(s)
+        by_area.setdefault(s.get("area") or label(s.get("specialist") or "general"), []).append(s)
     blocks.append({"type": "divider"})
     if not by_area:
         blocks.append(section(":white_check_mark: *No warning signs found* in the data available."))
     for area, items in by_area.items():
-        blocks.append(section(f"*{label(area)} warning signs* ({len(items)})"))
+        blocks.append(section(f"*{area}* ({len(items)} warning sign{'s' if len(items) != 1 else ''})"))
         for s in items[:15]:
             blocks.append(section(f"{_signal_line(s)}  ·  _{cap(s['severity'])}_"))
             notes = []

@@ -13,10 +13,11 @@ Run `renewal-risk serve` (or the Docker image) and open `http://<host>:8080/admi
 | Step | Screen | What you do |
 |---|---|---|
 | First run | Setup | Enter the one-time **setup token** printed in the server log, create the admin account, and choose the **business type**: B2B SaaS or IT services & consulting. |
-| 1 | Data sources | The screen shows one card per data category for your business type. For each card, pick a system from the dropdown and sign in. **OAuth** systems open their own sign-in page. **Token** systems take a key. **CSV / Excel upload** works for anything else. If a system holds other kinds of data too (e.g. Salesforce support cases), the dialog asks whether to use it for those as well. **Test** checks the connection. |
-| 2 | Field mapping | **Suggest with AI** proposes, for every standard field, which field in your system holds it (see section 2). Change anything with the field picker or an expression, click **Preview** to see how the records will look to the agent, then **Save**. |
-| 3 | Account matching | Shows the share of accounts each system matched. Choose the match rules, then click **Match** or **Not a match** on each suggested match. |
-| 4 | Signals & playbooks | Switch signals on or off, set thresholds, and write your approved actions. |
+| 1 | Data sources | **Connected systems:** sign in once to each system (**OAuth** systems open their own sign-in page, **token** systems take a key, databases take a connection string, **CSV / Excel** files are uploaded). Then, in each section, every data type gets its own row: pick the system, the object and the field that links a record to its customer, and **Lock & map fields** (section 1). **Test** checks a connection. |
+| — | Field mapping | Opened from **Lock & map fields** or **Map fields** on a Data sources row (no sidebar entry). **Suggest with AI** proposes, for every standard field, which field in your system holds it (see section 2). Change anything, **Preview**, then **Save**. Each locked row shows **mapped** or **not mapped** (hover for the required fields still missing). |
+| 2 | Account matching | **Only shown when needed:** when a second system keeps its own customer list (for example Stripe customers next to Salesforce accounts). Shows the share of accounts each system matched. Choose the match rules, then click **Match** or **Not a match** on each suggested match (section 3). With one system, or systems that all use the same account ids, there is nothing to match and the screen is hidden. |
+| 3 | Signals & playbooks | Switch signals on or off, set thresholds, and write your approved actions. |
+| 4 | AI agents | The coordinator, one specialist per data section, and the synthesis agent: edit each one's instructions (section 6b). |
 | 5 | Access & Slack | Add people (by their Slack email) with a role and scope, create API keys, paste the Slack tokens, and send a test message. |
 | 6 | Health & feedback | Shows what is still missing, connection status, cost, and recent assessments. Mark each assessment agree/disagree and record the real renewal outcome. |
 | 7 | Accuracy | Replays renewals that already closed and shows how many losses the agent would have caught (section 6). |
@@ -30,7 +31,8 @@ in the sidebar until you're done:
 1. connect your systems;
 2. sign in and test every connection;
 3. map the required fields;
-4. match accounts across systems (80% or more);
+4. match accounts across systems (80% or more) — only listed when a second
+   system keeps its own customer list;
 5. at least 5 warning signs have data;
 6. give people access;
 7. connect Slack;
@@ -94,6 +96,59 @@ wording used in the UI and Slack ("SOW renewal" vs "renewal").
 ---
 
 ## 1. Connect systems
+
+### Connect once, then pick an object per data type
+
+**Data sources** separates *connecting* a system from *choosing what to read*.
+
+1. **Connected systems.** Click **+ Connect a system** and sign in once. You can
+   connect a ready-made system (Salesforce, HubSpot, Stripe, Zendesk…), a
+   database (connection string, stored encrypted, only `SELECT` is ever run),
+   or a set of **CSV / Excel** files (upload more files later from the same
+   row).
+2. **One row per data type in each section.** For example, *Renewals* reads
+   `from [crm ▼] object [Opportunity ▼] linked by [AccountId ▼]`.
+   - **The system** is any connected one. Sections are independent: support
+     tickets can come from Zendesk while renewals come from Salesforce.
+   - **The object** lists what that system has:
+     - Salesforce: standard and custom objects;
+     - databases: tables and views;
+     - HubSpot: objects, including custom ones;
+     - CSV: the uploaded files.
+
+     The usual object is pre-filled.
+   - **Linked by** is the field that ties a record to its customer (AccountId,
+     account_id, OrgId…). It is pre-filled where possible, and not asked for
+     the customer list itself. HubSpot links through company associations.
+3. **Lock & map fields.** This saves the choice, reads that data type **only**
+   from that object, and opens **Field mapping** on it.
+   - A locked row shows 🔒 with **Map fields** and **Change**.
+   - Locking the customer list also makes that system the primary account
+     list.
+   - Choosing the preset's own object (for example Opportunity for renewals)
+     keeps the preset's ready-made field mapping. Any other object starts from
+     `id` and the link field, ready for **Suggest with AI** or **Auto-map**.
+
+Rows you haven't locked keep reading the preset's default object, shown as
+"Now read from … (default)". REST and MCP systems have no object list: for
+custom sections, use **+ REST / MCP** on the section.
+
+If a system is slow, Field mapping stops waiting after 60 seconds. It then
+shows the error with **Try again** and **Change the object**.
+
+![Connected systems](screenshots/26-connected-systems.png)
+
+![Pick an object for each data type](screenshots/27-pick-objects.png)
+
+![A locked data type](screenshots/28-locked-object.png)
+
+In YAML (`connectors.yaml`):
+
+```yaml
+assign:
+  renewal: {source: crm, object: Opportunity, link: AccountId}
+  ticket:  {source: helpdesk, object: tickets.csv, link: OrgId}
+```
 
 ### With a preset
 
@@ -307,7 +362,10 @@ string such as `"'meeting'"` is a constant.
 
 The primary source owns the account list. Each other source says how its
 customers match those accounts. Rules are tried in order, and the first match
-wins:
+wins. A source with no customer list of its own (its records already carry the
+primary account id) needs no rules: it is `same_id`. When every source is
+`same_id`, the **Account matching** screen, its checklist step and its Health
+card are hidden.
 
 ```yaml
 linking:
@@ -601,6 +659,41 @@ When enabled, `serve` runs the scan in-process. You can also run
 `renewal-risk scan` from cron or Kubernetes instead. An alert fires once, when
 an account rises into `min_band`. It can fire again only after the account has
 dropped below that band and risen back.
+
+## 6b. AI agents
+
+A full assessment is run by a team of agents (**AI agents** screen):
+
+1. **Coordinator.** Sees which sections have data for the account (and how
+   many records each) and decides which specialists to run.
+2. **One specialist per data section**, run in parallel. Each reads **only its
+   own section's data** and checks the warning signs that use that data.
+   - Three sections with data mapped means three specialists. A section with
+     nothing mapped is skipped.
+   - Each data type belongs to one section, the first that lists it. For
+     example, contracts sit under Customers & renewals, not again under
+     Billing, so nothing is read twice.
+   - Every custom section adds one more specialist.
+3. **Synthesis.** Weighs all the specialists' findings and writes the score,
+   the reasons and two to four actions, using your playbook.
+
+Each agent has **instructions** you can edit: what to focus on and what matters
+most for your company. The section focus from the pack is the default.
+**Reset to default** goes back to it, and **Show full prompt** shows exactly
+what the agent receives. The safety rules can't be edited: cite only real
+records, never invent, keep the answer format. Instructions are stored in
+`agent.yaml`:
+
+```yaml
+agents:
+  coordinator: {instructions: "Always run the support specialist when tickets exist."}
+  support:     {instructions: "Escalations raised by VPs matter most."}
+  synthesis:   {instructions: "Mention the renewal date in the rationale."}
+```
+
+A custom section's specialist instructions are its focus, kept with the
+section. In rules-only mode (no AI key) the free rules answer instead, and the
+instructions apply once a key is added.
 
 ## 7. Check everything
 

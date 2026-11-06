@@ -56,10 +56,10 @@ def test_saving_a_source_keeps_secrets_out_of_yaml(admin, demo_config):
     assert sources["payments"]["connection"]["credentials_complete"] is True
     assert sources["payments"]["auth_method"] == "token"
     # Editing without re-entering the secret keeps it.
-    admin.put("/admin/api/sources/payments", json={"preset": "stripe", "auth_method": "token", "disabled_entities": ["line_item"]})
+    admin.put("/admin/api/sources/payments", json={"preset": "stripe", "auth_method": "token"})
     from renewal_risk.service.context import get_context
     src = get_context().settings.sources["payments"]
-    assert src["connection"]["auth"]["token"] == "rk_test_SECRET123" and "line_item" not in src["entities"]
+    assert src["connection"]["auth"]["token"] == "rk_test_SECRET123"
     assert admin.delete("/admin/api/sources/payments").json()["ok"]
     assert "payments" not in yaml.safe_load((demo_config / "connectors.yaml").read_text(encoding="utf-8"))["sources"]
     assert admin.put("/admin/api/sources/Bad-Name", json={"preset": "stripe"}).status_code == 400
@@ -122,7 +122,7 @@ def test_csv_upload_map_preview_save(admin, demo_config, tmp_path):
     csv_bytes = b"TicketNo,Org,State,Sev,Opened\nT1,A001,Open,P1,2026-01-05\nT2,A002,Closed,P3,2026-01-06\n"
     up = admin.post("/admin/api/sources/legacy/upload", files={"file": ("tickets.csv", csv_bytes, "text/csv")}).json()
     assert up["columns"] == ["TicketNo", "Org", "State", "Sev", "Opened"]
-    assert admin.put("/admin/api/sources/legacy/csv-entity", json={"entity": "ticket", "file": "tickets.csv", "match": "Org"}).json()["ok"]
+    assert admin.put("/admin/api/assign/ticket", json={"source": "legacy", "object": "tickets.csv", "link": "Org"}).json()["ok"]
     mapping = admin.get("/admin/api/mapping/legacy/ticket").json()
     assert {f["name"] for f in mapping["describe"]["fields"]} >= {"TicketNo", "State", "Sev"}
     sugg = admin.post("/admin/api/mapping/legacy/ticket/suggest", json={"use_model": True}).json()
@@ -143,6 +143,19 @@ def test_linking_review_from_the_ui(admin):
     assert billing["linked"] == 4 and billing["review"][0]["customer_id"] == "cus_stark"
     after = admin.post("/admin/api/linking/decision", json={"source": "billing", "account_id": "A005", "link_value": "cus_stark", "status": "approved"}).json()
     assert after["sources"]["billing"]["linked"] == 5 and after["sources"]["billing"]["review"] == []
+
+
+def test_account_matching_only_when_needed(admin):
+    """Shown (sidebar, checklist, Health) only while a second system keeps its own customer list."""
+    def state():
+        items = {i["key"] for i in admin.get("/admin/api/setup/checklist").json()["items"]}
+        return admin.get("/admin/api/status").json()["matching_needed"], admin.get("/admin/api/health").json()["matching_needed"], "matching" in items
+
+    assert state() == (True, True, True)  # billing (Stripe) has its own customers
+    for name in admin.get("/admin/api/linking").json()["sources"]:
+        assert admin.put(f"/admin/api/linking/{name}", json={"rules": [{"match": "same_id"}]}).json()["ok"]
+    assert state() == (False, False, False)
+    assert admin.get("/admin/api/linking").json()["note"].endswith("nothing to match")
 
 
 def test_signals_playbooks_access_slack_keys_feedback(admin, demo_config):
@@ -195,7 +208,7 @@ def services_ctx(tmp_path, monkeypatch):
 
 def test_it_services_assessment(services_ctx):
     settings = services_ctx.settings
-    assert settings.pack["name"] == "it_services" and "delivery" in settings.agent["specialists"]
+    assert settings.pack["name"] == "it_services" and "delivery" in settings.agent["specialists"]  # one specialist per section
     result = services_ctx.engine.assess("C001", account_name="Northwind Bank")
     signals = {s["name"] for p in result.packets for s in p["signals"]}
     assert {"budget_overrun", "project_red", "missed_milestones", "sow_ending_no_renewal", "open_escalations"} <= signals
@@ -213,7 +226,7 @@ URGENT = {"name": "urgent_ticket_pileup", "description": "Several urgent tickets
 
 def test_custom_signals_preview_test_save_and_survive_threshold_saves(admin, demo_config):
     builder = admin.get("/admin/api/signals/builder").json()
-    assert "count" in builder["rules"] and "ticket" in builder["entities"] and "relationship" in builder["specialists"]
+    assert "count" in builder["rules"] and "ticket" in builder["entities"]
 
     preview = admin.post("/admin/api/signals/preview", json={"signal": URGENT}).json()
     assert preview == {"explanation": "Counts tickets that are open. Medium at 2 or more, high at 3 or more.", "errors": []}

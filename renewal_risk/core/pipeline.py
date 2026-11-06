@@ -110,7 +110,7 @@ def rules_assessment(account_id: str, packets: list[dict], playbooks: dict, rule
         counts = [f"{n} {word}" for word, n in (("serious", sum(s["severity"] == "high" for s in fired)),
                                                  ("moderate", sum(s["severity"] == "medium" for s in fired)),
                                                  ("minor", sum(s["severity"] == "low" for s in fired))) if n]
-        areas = [p["specialist"] for p in packets if p["signals"]]
+        areas = [p.get("label") or p["specialist"] for p in packets if p["signals"]]
         area_text = ", ".join(areas[:-1]) + " and " + areas[-1] if len(areas) > 1 else areas[0]
         rationale = (f"{len(fired)} warning sign{'s' if len(fired) != 1 else ''} found ({', '.join(counts)}) in {area_text}. "
                      f"Most serious: {fired[0]['value']}.")
@@ -138,7 +138,12 @@ class Engine:
     # -- configuration views -------------------------------------------------
 
     def specialists(self) -> dict[str, dict]:
+        """One per data section (settings.specialists_for), each reading only that section's data."""
         return self.settings.agent.get("specialists") or {}
+
+    def instructions(self, agent: str) -> str:
+        """The company's instructions for the coordinator or synthesis agent (AI agents screen)."""
+        return ((self.settings.agent.get("agents") or {}).get(agent) or {}).get("instructions") or ""
 
     def available_entities(self) -> set[str]:
         return {e for e in self._needed_entities() if self.pool.providers(e)}
@@ -278,6 +283,8 @@ class Engine:
         return {
             "account_id": account_id, "as_of": as_of,
             "signals": all_signals, "high_count": high, "medium_count": medium,
+            "score": (score := score_signals(all_signals, self.rules["weights"])),
+            "band": band_for(score, self.rules["thresholds"]),  # the same scoring as a full rules-only answer
             "flag": high > 0 or medium >= 2, "coverage": self.coverage(result),
             "gaps": gaps + [g for bucket in result.values() for g in bucket["gaps"]],
         }
@@ -327,12 +334,12 @@ class Engine:
         for role, spec in self.specialists().items():
             counts = {e: len(records.get(e, [])) for e in spec.get("entities", []) if e in available}
             if sum(counts.values()) > 0:
-                runnable[role] = {"entities": counts}
+                runnable[role] = {"section": spec.get("label", role), "entities": counts}
 
         coordinator = None
         chosen = list(runnable)
         if ai and runnable and self.settings.agent["llm"].get("use_coordinator", True) and len(runnable) > 1:
-            system, user = prompts.coordinator_prompt(account_id, runnable)
+            system, user = prompts.coordinator_prompt(account_id, runnable, self.instructions("coordinator"))
             coordinator = self.llm.structured("coordinator", system, user, schemas.COORDINATOR_SCHEMA, usage)
             picked = [s for s in coordinator.get("specialists", []) if s in runnable]
             chosen = picked or chosen
@@ -346,10 +353,11 @@ class Engine:
             catalog = [s for s in self.settings.signals if s.get("specialist") == role]
             role_candidates = candidates.get(role, {"signals": [], "gaps": []})
             system, user = prompts.specialist_prompt(role, spec.get("focus", ""), catalog, account_id, as_of, role_records,
-                                                     {"signals": role_candidates["signals"], "gaps": role_candidates["gaps"]})
+                                                     {"signals": role_candidates["signals"], "gaps": role_candidates["gaps"]},
+                                                     label=spec.get("label"))
             packet = self.llm.structured("specialist", system, user, schemas.EVIDENCE_PACKET_SCHEMA, usage, check=schemas.check_packet)
             known = {r["ref"] for rows in role_records.values() for r in rows}
-            packet.update({"specialist": role, "account_id": account_id, "as_of": as_of})
+            packet.update({"specialist": role, "label": spec.get("label", role), "account_id": account_id, "as_of": as_of})
             kept = []
             for s in packet["signals"]:
                 if s["evidence_ref"] in known:
@@ -364,7 +372,7 @@ class Engine:
         def rules_packet(role: str) -> dict:  # the deterministic signals, as a specialist would report them
             found = candidates.get(role, {"signals": [], "gaps": []})
             kept = [{k: s[k] for k in ("name", "severity", "value", "evidence_ref")} for s in found["signals"]]
-            return {"specialist": role, "account_id": account_id, "as_of": as_of, "signals": kept,
+            return {"specialist": role, "label": self.specialists()[role].get("label", role), "account_id": account_id, "as_of": as_of, "signals": kept,
                     "gaps": list(found["gaps"]), "evidence_refs": sorted({s["evidence_ref"] for s in kept})}
 
         packets: list[dict] = []
@@ -393,7 +401,8 @@ class Engine:
         elif not ai:
             assessment = rules_assessment(account_id, packets, self.settings.playbooks, self.rules)
         else:
-            system, user = prompts.synthesis_prompt(account_id, account_name, as_of, packets, self.settings.playbooks)
+            system, user = prompts.synthesis_prompt(account_id, account_name, as_of, packets, self.settings.playbooks,
+                                                    self.instructions("synthesis"))
             assessment = self.llm.structured("synthesis", system, user, schemas.RISK_ASSESSMENT_SCHEMA, usage, check=schemas.check_assessment)
             known = {r for p in packets for r in p["evidence_refs"]}
             fabricated.extend(c for c in assessment["citations"] if c not in known)

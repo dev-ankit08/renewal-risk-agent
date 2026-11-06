@@ -42,7 +42,7 @@ def test_full_assessment_across_sources(ctx):
     assert "billing:invoice/FAKE" not in a["citations"]
     assert a["recommended_actions"] and all(act["evidence_refs"] for act in a["recommended_actions"])
     assert result.leakage_violations == []
-    assert {p["specialist"] for p in result.packets} == {"commercial", "relationship", "financial", "usage"}
+    assert {p["specialist"] for p in result.packets} == {"accounts", "billing", "support", "usage"}  # one per data section
     stored = ctx.store.latest_assessment("A001")
     assert stored["assessment"]["score"] == 100
 
@@ -97,3 +97,12 @@ def test_rules_mode_answers_without_any_model_call(ctx, monkeypatch):
     assert view["recommended_actions"] and all(a["playbook_id"] in plays for a in view["recommended_actions"])
     assert all(s["how_calculated"] for s in view["signals"])
     assert set(view["citations"]) == {s["evidence_ref"] for s in view["signals"]}
+
+
+def test_quick_check_and_full_answer_agree(ctx):
+    """The period list's quick check and a single-account answer score the same way (same colour, same band)."""
+    ctx.settings.agent["llm"]["mode"] = "rules"
+    for account in ("A001", "A002", "A003", "A004", "A005", "A006"):
+        screen = ctx.engine.prescreen(account)
+        full = ctx.engine.assess(account).assessment
+        assert (screen["score"], screen["band"]) == (full["score"], full["band"]), account

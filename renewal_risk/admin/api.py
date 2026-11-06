@@ -16,6 +16,7 @@ import re
 import secrets as pysecrets
 import time
 from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FuturesTimeout
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -28,7 +29,7 @@ from ..auth import oauth
 from ..auth.secrets import default_store
 from ..core import model
 from ..core import playbooks as playbooks_mod
-from ..core import backtest, prompts
+from ..core import backtest, objects, prompts
 from ..core import sections as sections_mod
 from ..core import signals as signals_mod
 from ..core.connector import ConnectorError
@@ -39,7 +40,7 @@ from ..service import workspace
 from ..service.context import get_context, reload_context
 from . import auth, packs
 from .config_store import FileConfigStore
-from .mapping_agent import REQUIRED, MappingAgent, inactive_signals
+from .mapping_agent import MappingAgent, inactive_signals, missing_required
 
 router = APIRouter(prefix="/admin/api", tags=["admin"])
 callback_router = APIRouter(tags=["admin"])
@@ -133,7 +134,7 @@ def status(request: Request) -> dict:
         "pack": ctx.settings.pack.get("name"), "packs": [{"name": n, "label": p.get("label", n), "description": p.get("description", "")}
                                                           for n, p in load_packs().items()],
         "callback_url": callback_url(request), "model_configured": ctx.engine.ai_enabled(),
-        "workspace": workspace.status(ctx),
+        "workspace": workspace.status(ctx), "matching_needed": ctx.engine.linker.needs_matching(),
     }
 
 
@@ -249,7 +250,6 @@ class SourceBody(BaseModel):
     auth_method: str | None = None
     params: dict = {}
     secrets: dict = {}
-    disabled_entities: list[str] = []
     test_data: bool = False
     make_primary: bool = False
 
@@ -288,10 +288,10 @@ def save_source(name: str, body: SourceBody, admin: str = Depends(auth.current_a
                         entry[param] = f"${{SECRET:{key}}}"
                 elif body.params.get(param) not in (None, ""):
                     entry[param] = body.params[param]
-            if body.disabled_entities:
-                entry["entities"] = {e: None for e in body.disabled_entities if e in model.ENTITIES}
         elif body.type == "csv":
             entry["path"] = previous.get("path") or f"uploads/{name}"
+        elif body.type == "sql":
+            entry["dsn"] = _secret_ref(sstore, name, "dsn", body.secrets.get("dsn", "")) or previous.get("dsn")
         if body.test_data:
             entry["test_data"] = True
         sources[name] = entry
@@ -385,34 +385,6 @@ async def upload_csv(name: str, file: UploadFile = File(...), admin: str = Depen
     return {"file": filename, "columns": columns}
 
 
-class CsvEntityBody(BaseModel):
-    entity: str
-    file: str
-    match: str | None = None  # column holding the account / customer key (fetch); None = list only
-
-
-@router.put("/sources/{name}/csv-entity")
-def csv_entity(name: str, body: CsvEntityBody, admin: str = Depends(auth.current_admin)) -> dict:
-    ctx = get_context()
-    if body.entity not in model.ENTITIES:
-        raise HTTPException(400, f"unknown entity '{body.entity}'")
-    store = config_store(ctx)
-
-    def change():
-        doc = store.read("connectors.yaml")
-        src = (doc.get("sources") or {}).get(name)
-        if not src or src.get("type") != "csv":
-            raise HTTPException(400, f"'{name}' is not a CSV upload source")
-        block = (src.setdefault("entities", {}) or {}).get(body.entity) or {}
-        block["list"] = {"file": body.file}
-        if body.match:
-            block["fetch"] = {"file": body.file, "match": body.match}
-        block.setdefault("fields", {"id": "id"})
-        src["entities"][body.entity] = block
-        store.write("connectors.yaml", doc, admin)
-    return _apply(change)
-
-
 class PrimaryBody(BaseModel):
     source: str
 
@@ -434,7 +406,8 @@ def set_primary(body: PrimaryBody, admin: str = Depends(auth.current_admin)) -> 
 # custom sections (sections.yaml): a new data type + its own specialist
 # ---------------------------------------------------------------------------
 
-_SF_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,79}$")
+_OBJ_NAME = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.$ -]{0,119}$")  # objects, tables, uploaded file names
+SYSTEM_TIMEOUT = 60
 
 
 def _section(ctx, key: str) -> dict:
@@ -480,8 +453,7 @@ def delete_section(key: str, admin: str = Depends(auth.current_admin)) -> dict:
     ctx = get_context()
     section = _section(ctx, key)
     entity = section["data_type"]["name"]
-    users = [x["name"] for x in _catalog(ctx) if x.get("origin") == "custom"
-             and (x.get("specialist") == key or entity in signals_mod.required_entities(x))]
+    users = [x["name"] for x in _catalog(ctx) if x.get("origin") == "custom" and entity in signals_mod.required_entities(x)]
     if users:
         raise HTTPException(409, f"delete the signals that use this section first: {', '.join(users)}")
     store, sstore = config_store(ctx), secret_store_for(ctx)
@@ -505,21 +477,89 @@ def delete_section(key: str, admin: str = Depends(auth.current_admin)) -> dict:
     return _apply(change)
 
 
-@router.get("/sources/{name}/objects/{obj}/fields")
-def salesforce_object_fields(name: str, obj: str, admin: str = Depends(auth.current_admin)) -> dict:
-    """A Salesforce object's fields — to pick the account lookup and to start a data type."""
-    ctx = get_context()
-    if _source(ctx, name).get("type") not in packs.SALESFORCE_TYPES:
-        raise HTTPException(400, f"'{name}' is not a Salesforce connection")
-    if not _SF_NAME.match(obj):
-        raise HTTPException(400, "object names look like Account or Survey__c")
+def _adapter(ctx, name: str):
+    adapter = objects.ADAPTERS.get(objects.kind_of(_source(ctx, name)) or "")
+    if adapter is None:
+        raise HTTPException(400, f"'{name}' has no objects to pick (REST and MCP systems use a request instead)")
+    return adapter
+
+
+def _from_system(ctx, name: str, read):
+    """Ask the connected system, with errors and slow systems reported, never hung."""
+    pool = ThreadPoolExecutor(max_workers=1)
     try:
-        fields = ctx.engine.pool.get(name).object_fields(obj)
-    except ConnectorError as exc:
-        raise HTTPException(502, f"Salesforce: {exc}") from exc
-    if not fields:
-        raise HTTPException(404, f"Salesforce has no object '{obj}' (check the API name, e.g. Survey__c)")
-    return {"object": obj, "fields": [{"name": k, **v} for k, v in sorted(fields.items())]}
+        return pool.submit(lambda: read(ctx.engine.pool.get(name))).result(timeout=SYSTEM_TIMEOUT)
+    except FuturesTimeout as exc:
+        raise HTTPException(504, f"'{name}' did not answer within {SYSTEM_TIMEOUT} seconds — test the connection and try again") from exc
+    except (ConnectorError, objects.ObjectError) as exc:
+        raise HTTPException(502, f"{name}: {exc}") from exc
+    finally:
+        pool.shutdown(wait=False)  # a call that timed out finishes in the background
+
+
+@router.get("/sources/{name}/objects")
+def list_objects(name: str, admin: str = Depends(auth.current_admin)) -> dict:
+    """The objects a connected system offers (Salesforce objects, tables, files, HubSpot objects); cached per connection."""
+    ctx = get_context()
+    adapter = _adapter(ctx, name)
+
+    def read(conn):
+        if getattr(conn, "_objects", None) is None:
+            conn._objects = adapter.list(conn)[:objects.MAX_OBJECTS]
+        return conn._objects
+    return {"source": name, "label": adapter.label, "links": adapter.links, "objects": _from_system(ctx, name, read)}
+
+
+@router.get("/sources/{name}/objects/{obj}/fields")
+def object_fields(name: str, obj: str, admin: str = Depends(auth.current_admin)) -> dict:
+    """One object's fields — to pick the field that links a record to its customer."""
+    ctx = get_context()
+    adapter = _adapter(ctx, name)
+    if not _OBJ_NAME.match(obj):
+        raise HTTPException(400, f"'{obj}' is not a valid object name")
+    fields = _from_system(ctx, name, lambda conn: adapter.fields(conn, obj))
+    if adapter.links and not fields:
+        raise HTTPException(404, f"'{name}' has no object '{obj}' (check the name, e.g. Survey__c)")
+    return {"object": obj, "fields": fields}
+
+
+class AssignBody(BaseModel):
+    source: str
+    object: str
+    link: str | None = None
+
+
+@router.put("/assign/{entity}")
+def assign_object(entity: str, body: AssignBody, admin: str = Depends(auth.current_admin)) -> dict:
+    """Lock which system and object a data type is read from (then map its fields)."""
+    ctx = get_context()
+    if entity not in model.ENTITIES:
+        raise HTTPException(400, f"unknown data type '{entity}'")
+    adapter = _adapter(ctx, body.source)
+    if not _OBJ_NAME.match(body.object) or (body.link and not _OBJ_NAME.match(body.link)):
+        raise HTTPException(400, "object and link field names are letters, digits, _ . or $")
+    if adapter.links and not body.link and entity not in objects.CUSTOMER_LIST:
+        raise HTTPException(400, "choose the field that links each record to its customer")
+    store = config_store(ctx)
+
+    def change():
+        doc = store.read("connectors.yaml")
+        doc.setdefault("assign", {})[entity] = {k: v for k, v in body.model_dump().items() if v}
+        if entity == "account":
+            doc["primary"] = body.source  # the customer list comes from the chosen system
+        store.write("connectors.yaml", doc, admin)
+    return _apply(change)
+
+
+@router.delete("/assign/{entity}")
+def unassign_object(entity: str, admin: str = Depends(auth.current_admin)) -> dict:
+    store = config_store(get_context())
+
+    def change():
+        doc = store.read("connectors.yaml")
+        (doc.get("assign") or {}).pop(entity, None)
+        store.write("connectors.yaml", doc, admin)
+    return _apply(change)
 
 
 class ConnectBody(BaseModel):
@@ -605,18 +645,7 @@ def connect_section(key: str, body: ConnectBody, admin: str = Depends(auth.curre
     if body.kind == "salesforce":
         if _source(ctx, body.source).get("type") not in packs.SALESFORCE_TYPES:
             raise HTTPException(400, f"'{body.source}' is not a Salesforce connection")
-        if not (_SF_NAME.match(body.object) and _SF_NAME.match(body.account_field)):
-            raise HTTPException(400, "give the object (e.g. Survey__c) and the field that points to the account (e.g. Account__c)")
-        fname = f"mappings/{body.source}.overrides.yaml"
-
-        def change():  # the overrides file survives re-saving the connection
-            doc = store.read(fname)
-            block = doc.get(entity) or {}
-            block["fetch"] = {"object": body.object, "account_field": body.account_field}
-            block.setdefault("fields", {"id": "Id", "created_at": "CreatedDate | date"})
-            doc[entity] = block
-            store.write(fname, doc, admin)
-        return _apply(change)
+        return assign_object(entity, AssignBody(source=body.source, object=body.object, link=body.account_field), admin)
 
     connection, request = _generic_source(body, sstore)
 
@@ -651,10 +680,8 @@ def _current_fields(src: dict, entity: str) -> dict:
 
 
 def _describe(ctx, name: str, entity: str) -> dict:
-    try:
-        return ctx.engine.pool.get(name).describe(entity, link_value=_sample_link_value(ctx, name))
-    except ConnectorError as exc:
-        raise HTTPException(502, f"could not read sample records: {exc}") from exc
+    link = _sample_link_value(ctx, name)
+    return _from_system(ctx, name, lambda conn: conn.describe(entity, link_value=link))
 
 
 @router.get("/mapping/{name}/{entity}")
@@ -736,7 +763,7 @@ def _write_mapping(ctx, name: str, entity: str, fields: dict, admin: str) -> Non
 @router.post("/mapping/auto")
 def auto_map(admin: str = Depends(auth.current_admin)) -> dict:
     """Map every source's data types at once: confident suggestions are saved, only
-    for fields not mapped yet; the rest is listed for review on Field mapping."""
+    for fields not mapped yet; the rest is listed for review (Map fields on each Data sources row)."""
     ctx = get_context()
     llm = ctx.engine.llm if ctx.engine.ai_enabled() else None
     report, todo = [], []
@@ -854,9 +881,11 @@ def _catalog(ctx) -> list[dict]:
     return signal_catalog(ctx.settings.dir, ctx.settings.pack)
 
 
-def _signal_row(sig: dict, provided: set[str]) -> dict:
+def _signal_row(sig: dict, provided: set[str], categories: list[dict]) -> dict:
     needed = sorted(signals_mod.required_entities(sig))
-    row = {"name": sig["name"], "description": sig.get("description", ""), "specialist": sig.get("specialist"),
+    section = sections_mod.section_of(sig, categories)
+    row = {"name": sig["name"], "description": sig.get("description", ""), "specialist": section,
+           "area": next((c["label"] for c in categories if c["key"] == section), section),
            "origin": sig.get("origin", "built-in"), "enabled": sig.get("enabled", True), "rule": sig.get("rule"),
            "thresholds": sig.get("thresholds", {}), "direction": sig.get("direction", "above"), "entities": needed,
            "has_data": bool(set(needed) & provided), "explanation": signals_mod.explain(sig),
@@ -875,8 +904,6 @@ def _signal_problems(sig: dict, ctx, editing: str | None = None) -> list[str]:
     builtin = {s["name"] for s in _catalog(ctx) if s.get("origin") == "built-in"}
     if name in builtin and name != editing:
         problems.append(f"name: '{name}' is a built-in signal — pick another name")
-    if sig.get("specialist") not in (ctx.settings.agent.get("specialists") or {}):
-        problems.append(f"specialist: choose one of {', '.join(ctx.settings.agent.get('specialists') or {})}")
     return problems + signals_mod.validate([sig])
 
 
@@ -897,7 +924,8 @@ def _write_signal_overrides(ctx, admin: str, mutate) -> dict:
 def get_signals(admin: str = Depends(auth.current_admin)) -> dict:
     ctx = get_context()
     provided = ctx.engine.available_entities()
-    return {"signals": [_signal_row(s, provided) for s in _catalog(ctx)], "pack": ctx.settings.pack.get("name")}
+    categories = ctx.settings.pack.get("categories") or []
+    return {"signals": [_signal_row(s, provided, categories) for s in _catalog(ctx)], "pack": ctx.settings.pack.get("name")}
 
 
 class SignalsBody(BaseModel):
@@ -939,8 +967,7 @@ def signal_builder(admin: str = Depends(auth.current_admin)) -> dict:
     ctx = get_context()
     available = ctx.engine.available_entities()
     return {**signals_mod.builder_metadata(),
-            "entities": {e: model.field_docs(e) for e in sorted(available)},
-            "specialists": list(ctx.settings.agent.get("specialists") or {})}
+            "entities": {e: model.field_docs(e) for e in sorted(available)}}
 
 
 class SignalBody(BaseModel):
@@ -1026,7 +1053,7 @@ def draft_signal(body: DraftBody, admin: str = Depends(auth.current_admin)) -> d
     builder = signal_builder(admin)
     entities = {e: {f: d["description"] for f, d in fields.items()} for e, fields in builder["entities"].items()}
     examples = [{k: v for k, v in s.items() if k != "origin"} for s in _catalog(ctx) if s["name"] in ("open_ticket_backlog", "no_recent_activity", "project_red")]
-    system, user = prompts.signal_draft_prompt(text, builder, entities, builder["specialists"], examples)
+    system, user = prompts.signal_draft_prompt(text, builder, entities, examples)
     try:
         data = ctx.engine.llm.structured("utility", system, user, prompts.SIGNAL_DRAFT_SCHEMA)
     except LLMError as exc:
@@ -1037,7 +1064,7 @@ def draft_signal(body: DraftBody, admin: str = Depends(auth.current_admin)) -> d
         spec = {}
     spec = {k: v for k, v in spec.items() if k not in _SIGNAL_META}
     sig = {"name": re.sub(r"[^a-z0-9_]", "_", data["name"].lower()).strip("_")[:48], "description": data["description"],
-           "specialist": data["specialist"], "rule": data["rule"], **spec}
+           "rule": data["rule"], **spec}
     return {"signal": sig, "reason": data["reason"], "explanation": signals_mod.explain(sig), "errors": _signal_problems(sig, ctx)}
 
 
@@ -1233,7 +1260,7 @@ def health(admin: str = Depends(auth.current_admin)) -> dict:
     return {
         "errors": errors, "warnings": warnings, "pack": ctx.settings.pack.get("name"),
         "sources": {n: {"last_test": _last_tests.get(n), **_connection_state(ctx, n, s)} for n, s in ctx.settings.sources.items()},
-        "linking": _report_json(report) if report else None,
+        "linking": _report_json(report) if report else None, "matching_needed": ctx.engine.linker.needs_matching(),
         "daily": ctx.store.assessment_stats(30), "recent": ctx.store.recent_assessments(20),
         "actions": ctx.store.action_summary(30),
         "model_configured": ctx.engine.ai_enabled(),
@@ -1256,22 +1283,22 @@ def _checklist(ctx) -> list[dict]:
     """What is left to do, from what is already known — no source is queried."""
     cat = packs.catalog(ctx.settings, "")
     sources = ctx.settings.sources
-    missing_required = [c["label"] for c in cat["categories"] if c.get("required") and not c["configured_sources"]]
+    missing_sections = [c["label"] for c in cat["categories"] if c.get("required") and not c["configured_sources"]]
     broken = sorted(n for n, s in sources.items() if not _connection_state(ctx, n, s)["credentials_complete"]
                     or (_last_tests.get(n) or {"ok": True})["ok"] is False)
     unmapped = sorted(f"{n}: {signals_mod.label(e)}" for n, s in sources.items() for e, spec in (s.get("entities") or {}).items()
-                      if spec and not isinstance(spec, list) and e in model.ENTITIES
-                      and any(_current_fields(s, e).get(f) is None for f in ["id"] + REQUIRED.get(e, [])))
+                      if spec and e in model.ENTITIES and missing_required(e, spec))
     report = _cached_link_report(ctx)
     low = sorted(n for n, s in (_report_json(report)["sources"] if report else {}).items() if s["method"] != "same_id" and s["coverage"] < 0.8)
     available = ctx.engine.available_entities()
     with_data = sum(1 for s in ctx.settings.signals if signals_mod.required_entities(s) & available)
     items = [
-        ("connect", "Connect your systems", not missing_required, "still to connect: " + ", ".join(missing_required), "sources"),
+        ("connect", "Connect your systems", not missing_sections, "still to connect: " + ", ".join(missing_sections), "sources"),
         ("credentials", "Sign in and test every connection", bool(sources) and not broken, "check: " + ", ".join(broken), "sources"),
-        ("mapping", "Map the required fields", bool(sources) and not unmapped, "missing required fields — " + "; ".join(unmapped[:4]), "mapping"),
-        ("matching", "Match accounts across systems (80%+)", report is not None or len(sources) <= 1, "below 80%: " + ", ".join(low) if low
-         else "build the matches on Account matching", "matching"),
+        ("mapping", "Map the required fields", bool(sources) and not unmapped, "missing required fields — " + "; ".join(unmapped[:4]), "sources"),
+        # only when a second system keeps its own customer list
+        *([("matching", "Match accounts across systems (80%+)", report is not None and not low, "below 80%: " + ", ".join(low) if low
+            else "build the matches on Account matching", "matching")] if ctx.engine.linker.needs_matching() else []),
         ("signals", "At least 5 warning signs have data", with_data >= 5, f"{with_data} have data so far", "signals"),
         ("access", "Give people access", bool((ctx.settings.access or {}).get("users")), "add people on Access & Slack", "access"),
         ("slack", "Connect Slack", bool((ctx.settings.slack or {}).get("bot_token")), "add the Slack app tokens", "access"),
@@ -1358,6 +1385,72 @@ def save_rules(body: ScoringBody, admin: str = Depends(auth.current_admin)) -> d
     def change():
         doc = store.read("agent.yaml")
         doc["rules"] = {**(doc.get("rules") or {}), "weights": weights, "thresholds": thresholds}
+        store.write("agent.yaml", doc, admin)
+    return _apply(change)
+
+
+# ---------------------------------------------------------------------------
+# AI agents: coordinator -> one specialist per data section -> synthesis
+# ---------------------------------------------------------------------------
+
+def _prompt_preview(ctx, key: str, instructions: str) -> str:
+    """The full system prompt the agent gets, with these instructions (read-only on the screen)."""
+    if key == "coordinator":
+        return prompts.coordinator_prompt("<account>", {}, instructions)[0]
+    if key == "synthesis":
+        return prompts.synthesis_prompt("<account>", None, "<as-of date>", [], ctx.settings.playbooks, instructions)[0]
+    spec = ctx.engine.specialists()[key]
+    catalog = [x for x in ctx.settings.signals if x.get("specialist") == key]
+    return prompts.specialist_prompt(key, instructions, catalog, "<account>", "<as-of date>", {}, {}, label=spec.get("label"))[0]
+
+
+@router.get("/agents")
+def list_agents(admin: str = Depends(auth.current_admin)) -> dict:
+    ctx = get_context()
+    available = ctx.engine.available_entities()
+    own = ctx.settings.agent.get("agents") or {}
+    specialists = [{"key": k, "label": v["label"], "entities": v["entities"], "custom": v["custom"],
+                    "has_data": bool(set(v["entities"]) & available), "instructions": v["focus"], "default": v["default"],
+                    "signals": sorted(x["name"] for x in ctx.settings.signals if x.get("specialist") == k),
+                    "preview": _prompt_preview(ctx, k, v["focus"])} for k, v in ctx.engine.specialists().items()]
+    agents = {}
+    for k in sections_mod.AGENTS:
+        default = prompts.DEFAULT_INSTRUCTIONS[k]
+        current = (own.get(k) or {}).get("instructions") or default
+        agents[k] = {"key": k, "instructions": current, "default": default, "preview": _prompt_preview(ctx, k, current)}
+    return {"coordinator": agents["coordinator"], "specialists": specialists, "synthesis": agents["synthesis"],
+            "ai_enabled": ctx.engine.ai_enabled()}
+
+
+class InstructionsBody(BaseModel):
+    instructions: str = ""
+
+
+@router.put("/agents/{key}")
+def save_agent(key: str, body: InstructionsBody, admin: str = Depends(auth.current_admin)) -> dict:
+    """An agent's instructions; empty = back to the default. The safety rules are not editable."""
+    ctx = get_context()
+    text = body.instructions.strip()
+    if len(text) > 2000:
+        raise HTTPException(400, "keep instructions under 2,000 characters")
+    spec = ctx.engine.specialists().get(key)
+    if key not in sections_mod.AGENTS and spec is None:
+        raise HTTPException(404, f"no agent '{key}'")
+    if spec and spec["custom"]:  # a custom section's specialist: its focus lives with the section
+        section = _section(ctx, key)
+        if not text:
+            raise HTTPException(400, "a custom section's specialist needs instructions")
+        return save_section(key, SectionBody(label=section["label"], description=section["description"],
+                                             data_type=section["data_type"], focus=text), admin)
+    store = config_store(ctx)
+
+    def change():
+        doc = store.read("agent.yaml")
+        agents = doc.setdefault("agents", {})
+        if text and text != prompts.DEFAULT_INSTRUCTIONS.get(key, (spec or {}).get("default")):
+            agents[key] = {"instructions": text}
+        else:  # empty or the default: back to the default
+            agents.pop(key, None)
         store.write("agent.yaml", doc, admin)
     return _apply(change)
 

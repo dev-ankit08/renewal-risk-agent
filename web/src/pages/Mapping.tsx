@@ -79,8 +79,11 @@ function EntityMapping({ source, entity }: { source: string; entity: string }) {
     return out;
   }, [rows]);
 
-  if (view.error) return <><h2>Field mapping</h2><Notice kind="bad">{view.error}</Notice></>;
-  if (!view.data) return <p className="muted">Reading sample records from {source}…</p>;
+  if (view.error) return (
+    <><h2>Field mapping</h2><Notice kind="bad">{view.error}</Notice>
+      <p><button onClick={view.reload}>Try again</button> <button onClick={() => go("sources")}>Change the object</button></p></>
+  );
+  if (!view.data) return <p className="muted">Reading sample records from {source}… (up to a minute for a slow system)</p>;
   const v = view.data;
   const sourceFields = v.describe.fields.filter((f) => !f.free_text);
 

@@ -4,14 +4,11 @@ which data categories to ask for and which systems can fill each one.
 """
 from __future__ import annotations
 
-from ..core.settings import Settings, load_packs, load_presets
+from ..core import objects
+from ..core.sections import owned_entities
+from .mapping_agent import missing_required
+from ..core.settings import Settings, load_packs, load_presets, read_yaml
 
-GENERIC = [
-    {"type": "csv", "label": "CSV / Excel upload", "description": "Upload exports from any system; map columns on the next screen."},
-    {"type": "sql", "label": "Database (SQL)", "description": "Postgres, MySQL, SQL Server, Snowflake… — a read-only SELECT per account."},
-    {"type": "rest", "label": "REST API", "description": "Any JSON API — one GET per account."},
-    {"type": "mcp", "label": "MCP server", "description": "Any system with an MCP server — one tool call per account."},
-]
 SALESFORCE_TYPES = ("salesforce", "salesforce_rest")
 
 
@@ -32,6 +29,20 @@ def public_auth_methods(preset: dict, callback_url: str) -> list[dict]:
         out.append({"method": m["method"], "label": m.get("label", m["method"]), "oauth": bool(m.get("oauth")),
                     "help": str(m.get("help", "")).replace("{callback_url}", callback_url).strip(), "params": params})
     return out
+
+
+def data_type_row(entity: str, sources: dict[str, dict], locked: dict | None) -> dict:
+    """Where one data type is read from: the locked choice, else today's default (a preset's object)."""
+    if locked:
+        block = ((sources.get(locked.get("source")) or {}).get("entities") or {}).get(entity)
+        return {"entity": entity, "locked": True, **locked, "missing": missing_required(entity, block) if block else ["id"]}
+    for name, src in sources.items():
+        block = (src.get("entities") or {}).get(entity)
+        adapter = objects.ADAPTERS.get(objects.kind_of(src) or "")
+        if block:
+            current = adapter.current(block) if adapter and isinstance(block, dict) else None
+            return {"entity": entity, "locked": False, "source": name, "object": current}
+    return {"entity": entity, "locked": False, "source": None, "object": None}
 
 
 def catalog(settings: Settings, callback_url: str) -> dict:
@@ -58,11 +69,19 @@ def catalog(settings: Settings, callback_url: str) -> dict:
                                 "auth_methods": public_auth_methods(preset, callback_url)})
         categories.append({**{k: cat.get(k) for k in ("key", "label", "description", "entities", "required")},
                            "systems": systems, "configured_sources": filled_by})
+    assign = read_yaml(settings.dir / "connectors.yaml").get("assign") or {}
+    owned = owned_entities(pack.get("categories") or [])
+    for cat in categories:  # a data type is chosen once, in the first section that lists it
+        cat["rows"] = [data_type_row(e, configured, assign.get(e)) for e in owned.get(cat["key"], cat["entities"])]
     return {
         "pack": {k: pack.get(k) for k in ("name", "label", "description", "terminology")},
+        "connected": [{"name": n, "label": (presets.get(src.get("_preset") or "") or {}).get("label") or src.get("type"),
+                       "kind": objects.kind_of(src)} for n, src in configured.items()],
+        "systems": [{"preset": n, "label": p.get("label", n), "description": p.get("description", ""),
+                     "provides": preset_entities(p), "setup_notes": p.get("setup_notes", ""),
+                     "auth_methods": public_auth_methods(p, callback_url)} for n, p in sorted(presets.items())],
         "packs": [{"name": n, "label": p.get("label", n), "description": p.get("description", "")} for n, p in load_packs().items()],
         "categories": categories,
-        "generic": GENERIC,
         "salesforce_sources": salesforce,  # connections a custom section can read an object from
         "callback_url": callback_url,
     }

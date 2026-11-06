@@ -18,25 +18,39 @@ categories:
     description: Your customer list, renewal deals, contracts and contacts — usually the CRM.
     entities: [account, renewal, contract, line_item, contact, activity]
     required: true
+    focus: >-
+      Commercial health of the renewal and the relationship around it: deal value vs
+      current contract value, product / seat reductions, scheduled cancellations, a
+      stalled deal, whether the champion is still there and how recently anyone talked
+      to the customer.
   - key: billing
     label: Billing & payments
     description: Subscriptions, invoices and payments.
     entities: [invoice, payment, contract, line_item]
+    focus: >-
+      Payment behaviour: overdue invoices, failed or disputed payments, cancellations —
+      early signs of budget pressure or intent to leave.
   - key: support
     label: Support
     description: Support tickets, priorities, escalations and satisfaction.
     entities: [ticket]
+    focus: >-
+      Support experience: ticket load and spikes, escalations, urgent tickets left open,
+      and satisfaction scores.
   - key: usage
     label: Product usage
     description: Active users, seats used, key product events — usually a product database or warehouse.
     entities: [usage_metric]
+    focus: >-
+      Product adoption: usage trend and how much of what they pay for they actually use.
 
 signals: [amount_decrease, opp_stalled, contract_downgrade, cancellation_scheduled, case_volume_spike,
           open_ticket_backlog, support_escalation, high_priority_tickets, poor_satisfaction, champion_departed,
           no_recent_activity, low_engagement, invoice_overdue, payment_failures, payment_disputes,
           usage_decline, seat_utilisation]
 
-# Specialists come from renewal_risk/defaults/agent.yaml (commercial, relationship, financial, usage).
+# One AI specialist per section above, with its `focus` as default instructions
+# (editable on the admin AI agents screen).
 
 playbooks:
   owner_roles:   # `find` = who gets the Slack DM for an account (set the others on the Playbook screen)

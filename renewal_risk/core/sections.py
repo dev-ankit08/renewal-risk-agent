@@ -26,6 +26,7 @@ from __future__ import annotations
 import re
 
 from . import guard, model
+from .signals import required_entities
 
 TYPES = ("str", "num", "date", "bool", "list")
 STANDARD_FIELDS = ("id", "account_id", "created_at", "updated_at")
@@ -111,14 +112,45 @@ def apply(sections: list[dict], agent: dict, pack: dict) -> None:
             "fields": {f["name"]: f"{f['type']} | {f['description']}" for f in s["data_type"]["fields"]},
             "date_field": s["data_type"]["date_field"],
         } for s in sections})
-    agent["specialists"] = {**(agent.get("specialists") or {}),
-                            **{s["key"]: {"entities": [s["data_type"]["name"]], "focus": s["focus"], "label": s["label"]} for s in sections}}
     pack["categories"] = list(pack.get("categories") or []) + [
         {"key": s["key"], "label": s["label"], "description": s["description"], "entities": [s["data_type"]["name"]],
-         "custom": True, "section": s} for s in sections]
+         "focus": s["focus"], "custom": True, "section": s} for s in sections]
+
+
+AGENTS = ("coordinator", "synthesis")  # the two agents around the specialists; their instructions live in agent.yaml `agents:`
+
+
+def owned_entities(categories: list[dict]) -> dict[str, list[str]]:
+    """Each data type belongs to one section: the first that lists it (contracts sit under
+    Customers & renewals, not again under Billing), so no data is read twice."""
+    seen: set[str] = set()
+    out = {}
+    for c in categories:
+        out[c["key"]] = [e for e in c["entities"] if e not in seen]
+        seen.update(c["entities"])
+    return out
+
+
+def specialists_for(categories: list[dict], agents: dict) -> dict[str, dict]:
+    """One specialist per data section, reading exactly that section's own data types.
+    Instructions: the admin's (agent.yaml `agents.<key>.instructions`), else the section's default focus."""
+    owned = owned_entities(categories)
+    return {c["key"]: {"entities": owned[c["key"]], "label": c["label"], "custom": bool(c.get("custom")),
+                       "default": c.get("focus") or c.get("description", ""),
+                       "focus": ((agents or {}).get(c["key"]) or {}).get("instructions") or c.get("focus") or c.get("description", "")}
+            for c in categories}
+
+
+def section_of(sig: dict, categories: list[dict]) -> str:
+    """The section (= specialist) a warning sign belongs to: the one holding its main data."""
+    spec = next((x for x in (sig, sig.get("current"), sig.get("numerator"), sig.get("trigger")) if isinstance(x, dict) and x.get("entity")), {})
+    main = spec.get("entity")
+    main = main[0] if isinstance(main, list) else main  # its main data: seat utilisation = usage ÷ seats -> usage
+    needed = required_entities(sig)
+    owned = owned_entities(categories)
+    return next((k for k, es in owned.items() if main in es), None) or         next((k for k, es in owned.items() if needed & set(es)), sig.get("specialist") or "general")
 
 
 def reserved_names(agent: dict, pack: dict, sections: list[dict] = ()) -> set[str]:
-    """Keys a section may not take: built-in categories and specialists."""
-    own = {s["key"] for s in sections}
-    return {c["key"] for c in pack.get("categories") or [] if not c.get("custom")} | (set(agent.get("specialists") or {}) - own)
+    """Keys a section may not take: the built-in sections and the coordinator / synthesis agents."""
+    return {c["key"] for c in pack.get("categories") or [] if not c.get("custom")} | set(AGENTS)

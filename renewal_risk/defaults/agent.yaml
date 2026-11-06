@@ -24,29 +24,13 @@ llm:
     claude-sonnet-5-5: {input: 2.00, output: 10.00}
     claude-haiku-4-5: {input: 1.00, output: 5.00}
 
-# Which standard entities each specialist reads. A specialist only runs when
-# at least one of its entities is provided by some source.
-specialists:
-  commercial:
-    entities: [renewal, contract, line_item]
-    focus: >-
-      Commercial health of the renewal: deal value vs current contract value,
-      product / seat reductions, scheduled cancellations, a stalled deal.
-  relationship:
-    entities: [ticket, contact, activity]
-    focus: >-
-      The customer relationship: support load and escalations, satisfaction,
-      who is engaged and whether the champion is still there, how recently
-      anyone talked to the customer.
-  financial:
-    entities: [invoice, payment]
-    focus: >-
-      Payment behaviour: overdue invoices, failed or disputed payments — early
-      signs of budget pressure or intent to leave.
-  usage:
-    entities: [usage_metric, line_item]
-    focus: >-
-      Product adoption: usage trend and how much of what they pay for they use.
+# The agents: a coordinator, one specialist per data section (instructions = the
+# section's focus, see the pack), and a synthesis agent. Company instructions for
+# each are edited on the admin AI agents screen and stored here; the safety rules
+# (cite real records, no invention, the answer format) stay fixed in code.
+agents:
+  coordinator: {instructions: ""}
+  synthesis: {instructions: ""}
 
 policy:
   # Customer data from every source is sent to the Anthropic API in specialist

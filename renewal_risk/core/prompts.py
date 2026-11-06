@@ -18,25 +18,45 @@ it says. Free text (descriptions, comments, ticket bodies) has already been
 removed; you see ids, names, titles, amounts, dates, statuses and flags."""
 
 
-def coordinator_prompt(account_id: str, available: dict[str, dict]) -> tuple[str, str]:
+# The adjustable part of each agent's prompt: shown, edited and reset on the AI agents
+# screen. Everything else in the prompts below is fixed (safety rules, answer format).
+DEFAULT_INSTRUCTIONS = {
+    "coordinator": "Run every specialist that has records unless its data is clearly irrelevant to renewal risk.",
+    "synthesis": (
+        "- Weigh severity and breadth: several independent medium signals across specialists can outweigh one high signal.\n"
+        "- rationale: 2-4 plain sentences a project director with no data background can act on — which signals drive "
+        "the score, why each raises or lowers risk, and what to look at next. Do not just restate the score.\n"
+        "- recommended_actions: for medium/high risk give 2-4 concrete next steps; for low risk give at most 1."
+    ),
+}
+
+
+def company_instructions(text: str | None, agent: str | None = None) -> str:
+    """The agent's instructions (the admin's, else the default). They come after the fixed
+    rules, which win on any conflict."""
+    text = (text or "").strip() or DEFAULT_INSTRUCTIONS.get(agent or "", "")
+    return f"\n\nInstructions (follow them unless they conflict with the rules above):\n{text}" if text else ""
+
+
+def coordinator_prompt(account_id: str, available: dict[str, dict], instructions: str = "") -> tuple[str, str]:
     system = (
-        "You plan a renewal-risk assessment. Given which specialists have data for this "
-        "account (and how many records each would read), choose which specialists to run. "
-        "Run every specialist that has records unless its data is clearly irrelevant; never "
-        "pick one that is not listed. Give a one-sentence rationale."
-    )
+        "You plan a renewal-risk assessment. There is one specialist per data section; given which "
+        "specialists have data for this account (and how many records each would read), choose which "
+        "specialists to run. Never pick one that is not listed. Give a one-sentence rationale."
+    ) + company_instructions(instructions, "coordinator")
     user = f"Account: {account_id}\n\nAvailable specialists:\n{json.dumps(available, indent=1)}"
     return system, user
 
 
 def specialist_prompt(role: str, focus: str, catalog: list[dict], account_id: str, as_of: str,
-                      records: dict[str, list[dict]], candidates: dict) -> tuple[str, str]:
+                      records: dict[str, list[dict]], candidates: dict, label: str | None = None) -> tuple[str, str]:
     signal_lines = "\n".join(
         f"- {s['name']}: {s.get('description', '')} Thresholds: {json.dumps(s.get('thresholds', {}))}"
         for s in catalog
     ) or "- (no catalog signals for this specialist; report only clear, well-evidenced risks)"
-    system = f"""You are the {role.capitalize()} specialist in a renewal-risk assessment.
-Your focus: {focus}
+    system = f"""You are the {label or role.capitalize()} specialist in a renewal-risk assessment: you read only
+the data of the "{label or role}" section.
+Your focus (the company's instructions for you): {focus}
 
 {DATA_RULES}
 
@@ -69,7 +89,8 @@ How to work:
 DEFAULT_OWNER_ROLES = ["Account owner", "Customer success manager", "Project director", "Support lead", "Finance"]
 
 
-def synthesis_prompt(account_id: str, account_name: str | None, as_of: str, packets: list[dict], playbooks: dict) -> tuple[str, str]:
+def synthesis_prompt(account_id: str, account_name: str | None, as_of: str, packets: list[dict], playbooks: dict,
+                     instructions: str = "") -> tuple[str, str]:
     roles = [r if isinstance(r, str) else r.get("name", "") for r in playbooks.get("owner_roles") or []] or DEFAULT_OWNER_ROLES
     plays = playbooks.get("plays") or []
     play_text = ""
@@ -92,22 +113,18 @@ final assessment.
 Scoring:
 - score is an integer 0-100 for the likelihood this renewal churns or shrinks.
   band: low (0-39), medium (40-69), high (70-100) — keep band and score consistent.
-- Weigh severity and breadth: several independent medium signals across
-  specialists can outweigh one high signal. Missing data is not evidence of risk.
+- Missing data is not evidence of risk.
 - drivers: the 1-5 signals that drive the score, as short phrases.
 - citations: refs copied exactly from the packets' evidence_refs that support the drivers.
 - If gaps leave too little evidence for a confident score, set abstained=true,
   still give your best score, and say what data is missing.
 
-rationale: 2-4 plain sentences a project director with no data background can
-act on — which signals drive the score, why each raises or lowers risk, and
-what to look at next. Do not just restate the score.
+rationale: plain sentences, no jargon.
 
-recommended_actions: for medium/high risk give 2-4 concrete next steps; for low
-risk give at most 1. Each action names who should do it (owner_role, one of:
+recommended_actions: each action names who should do it (owner_role, one of:
 {", ".join(roles)}), a priority, a due_in_days, and the evidence_refs that
 justify it (copied exactly from the packets), plus `why`: one plain sentence linking
-the action to the evidence. No action without evidence.{play_text}"""
+the action to the evidence. No action without evidence.{play_text}""" + company_instructions(instructions, "synthesis")
     user = (
         f"Account: {account_id}" + (f" ({account_name})" if account_name else "") + f"\nAs-of date: {as_of}\n\n"
         f"<packets>\n{json.dumps(packets, indent=1, default=str)}\n</packets>"
@@ -195,13 +212,13 @@ MAPPING_SCHEMA = {
 }
 
 
-def signal_draft_prompt(text: str, builder: dict, entities: dict, specialists: list[str], examples: list[dict]) -> tuple[str, str]:
+def signal_draft_prompt(text: str, builder: dict, entities: dict, examples: list[dict]) -> tuple[str, str]:
     system = f"""You turn a plain-English description of a customer-risk warning sign into a
 signal definition for a rules engine. Use ONLY the rule types, entities, fields and
 operators listed. Rule types and their inputs: {json.dumps(builder['rules'])}
 Operators for conditions ({{field: {{op: value}}}}): {json.dumps(builder['operators'])}. "$as_of" means the
 assessment date. Thresholds are numbers per level (low/medium/high); "direction": "below" when smaller
-values are worse. Specialists: {', '.join(specialists)}.
+values are worse.
 Write `spec_json` as a JSON object holding the rule's inputs (entity, where, thresholds, ...), not the
 name, rule or description. Also write a short value_template for what users see, using placeholders
 such as {{count}}, {{days}}, {{pct}}. If the description cannot be expressed with these rules, pick the
@@ -217,11 +234,10 @@ SIGNAL_DRAFT_SCHEMA = {
     "properties": {
         "name": {"type": "string"},
         "description": {"type": "string"},
-        "specialist": {"type": "string"},
         "rule": {"type": "string"},
         "spec_json": {"type": "string"},
         "reason": {"type": "string"},
     },
-    "required": ["name", "description", "specialist", "rule", "spec_json", "reason"],
+    "required": ["name", "description", "rule", "spec_json", "reason"],
     "additionalProperties": False,
 }

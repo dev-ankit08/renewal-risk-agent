@@ -76,31 +76,35 @@ def test_admin_ui_end_to_end(server, page, ctx, demo_config, monkeypatch):
     page.locator("input[type=password]").fill("long-enough-pw")
     page.get_by_role("button", name="Create admin & continue").click()
 
-    # 2. Data sources: categories from the SaaS pack, connect Stripe with a token.
+    # 2. Data sources: connect systems once — Stripe with a token, then a folder of CSV files.
     page.get_by_role("heading", name="Data sources").wait_for()
-    billing = page.locator(".card", has=page.get_by_role("heading", name="Billing & payments"))
-    billing.get_by_role("button", name="+ Connect a system").click()
+    systems = page.locator(".card", has=page.get_by_role("heading", name="Connected systems"))
+    systems.get_by_role("button", name="+ Connect a system").click()
     modal = page.get_by_role("dialog")
-    modal.locator("select").first.select_option("stripe")
-    modal.locator("input").first.fill("payments")
+    modal.get_by_label("system", exact=True).select_option("stripe")
+    modal.get_by_label("system name").fill("payments")
     modal.locator("input[type=password]").fill("rk_test_e2e")
     modal.get_by_role("button", name="Save & test").click()
-    billing.get_by_text("payments", exact=True).wait_for()
+    systems.get_by_text("payments", exact=True).wait_for()
     assert "rk_test_e2e" not in (demo_config / "connectors.yaml").read_text(encoding="utf-8")
 
-    # 3. Upload a CSV for support and map it with suggestions.
-    support = page.locator(".card", has=page.get_by_role("heading", name="Support"))
-    support.get_by_role("button", name="+ Connect a system").click()
+    systems.get_by_role("button", name="+ Connect a system").click()
     modal = page.get_by_role("dialog")
-    modal.locator("select").first.select_option("csv")
-    modal.locator("input").first.fill("legacy")
+    modal.get_by_label("system", exact=True).select_option("csv")
+    modal.get_by_label("system name").fill("legacy")
     csv_file = demo_config.parent / "tickets.csv"
-    csv_file.write_text("TicketNo,Org,State,Severity,Opened\nT1,A001,Open,High,2026-01-05\nT2,A002,Closed,Low,2026-01-06\n", encoding="utf-8")
-    modal.locator("input[type=file]").set_input_files(str(csv_file))
-    modal.get_by_role("button", name="Upload").click()
-    modal.get_by_text("What is in this file?").wait_for()
-    modal.locator("select").nth(2).select_option("Org")
-    modal.get_by_role("button", name="Continue to field mapping").click()
+    csv_file.write_text("TicketNo,Org,State,Severity,Opened\nT1,A001,Open,High,2026-01-05\nT2,A002,Closed,Low,2026-01-06\n"
+                        "T3,A001,Open,Low,2026-01-07\nT4,A001,Pending,High,2026-01-08\n", encoding="utf-8")
+    modal.get_by_label("first file").set_input_files(str(csv_file))
+    modal.get_by_role("button", name="Save & test").click()
+    systems.get_by_text("legacy", exact=True).wait_for()
+
+    # 3. Support: tickets come from that file — pick it, its link column, lock, then map with suggestions.
+    support = page.locator(".card", has=page.get_by_role("heading", name="Support"))
+    support.get_by_label("ticket system").select_option("legacy")
+    support.get_by_label("ticket object").fill("tickets.csv")
+    support.get_by_label("ticket link field").select_option("Org")
+    support.get_by_role("button", name="Lock & map fields").click()
     page.get_by_role("heading", name="ticket from legacy").wait_for()
     page.get_by_role("button", name="Suggest with AI").click()
     page.get_by_text("fake model").first.wait_for()
@@ -124,17 +128,14 @@ def test_admin_ui_end_to_end(server, page, ctx, demo_config, monkeypatch):
     dialog = page.get_by_role("dialog")
     dialog.get_by_label("signal name").fill("open_ticket_pileup")
     dialog.get_by_label("record type").select_option("ticket")
-    dialog.get_by_role("button", name="+ condition").click()
-    dialog.get_by_label("condition field").select_option("is_open")
-    dialog.get_by_label("condition value").fill("true")
     dialog.get_by_label("medium threshold").fill("2")
-    dialog.get_by_label("high threshold").fill("3")
-    dialog.get_by_text("Counts tickets that are open. Medium at 2 or more, high at 3 or more.").wait_for()
+    dialog.get_by_label("high threshold").fill("3")  # tickets now come only from the locked legacy file: 3 for A001
+    dialog.get_by_text("Counts tickets. Medium at 2 or more, high at 3 or more.").wait_for()
     dialog.get_by_role("button", name="Test signal").click()
     dialog.get_by_text("accounts would be flagged").wait_for()
     assert dialog.locator("tr", has_text="A001").locator(".badge", has_text="high").count() == 1
     dialog.get_by_role("button", name="Save signal").click()
-    page.get_by_text("open_ticket_pileup").wait_for()
+    page.locator("strong", has_text="open_ticket_pileup").wait_for()
     page.get_by_role("button", name="Save signals").click()
     page.get_by_text("Saved", exact=False).first.wait_for()
     page.get_by_role("tab", name="Playbook").click()
@@ -165,6 +166,21 @@ def test_admin_ui_end_to_end(server, page, ctx, demo_config, monkeypatch):
     page.locator("#results > *").first.wait_for()
     assert page.get_by_text("Recommended actions").count(), page.locator("#results").inner_text()
     assert page.locator(".badge.high").count() >= 1
+
+    # 7. Account matching shows only while needed: once every system uses the primary account ids,
+    #    it leaves the sidebar and Health (and is still reachable by its address).
+    page.goto(f"{server}/admin/#/health")
+    page.get_by_role("heading", name="Account matching").wait_for()
+    assert page.get_by_role("link", name="Account matching").count() == 1
+    for name in page.request.get(f"{server}/admin/api/linking").json()["sources"]:
+        assert page.request.put(f"{server}/admin/api/linking/{name}", data={"rules": [{"match": "same_id"}]}).ok
+    page.get_by_role("link", name="Signals & playbooks").click()
+    page.get_by_role("link", name="Health & feedback").click()
+    page.get_by_role("heading", name="Recent assessments — was the agent right?").wait_for()
+    page.wait_for_function("!document.querySelector('.side').innerText.includes('Account matching')")
+    assert page.get_by_role("heading", name="Account matching").count() == 0
+    page.goto(f"{server}/admin/#/matching")
+    page.get_by_text("nothing to match").wait_for()
     assert errors == [], errors
 
 
@@ -203,26 +219,34 @@ def test_custom_section_in_the_ui(server, page, ctx, demo_config, tmp_path):
     card = page.locator(".card", has=page.get_by_role("heading", name="Customer surveys"))
     card.get_by_text("custom section").wait_for()
 
-    # 2. Connect it with a CSV upload and map its fields.
-    card.get_by_role("button", name="+ Connect a system").click()
+    # 2. Connect the survey export once, pick it as the section's object, lock, map its fields.
+    card.get_by_role("button", name="+ REST / MCP").click()
+    assert "MCP server" in page.get_by_role("dialog").get_by_label("connection kind").inner_text()  # REST and MCP too
+    page.get_by_role("dialog").get_by_role("button", name="Cancel").click()
+    systems = page.locator(".card", has=page.get_by_role("heading", name="Connected systems"))
+    systems.get_by_role("button", name="+ Connect a system").click()
     dialog = page.get_by_role("dialog")
-    assert "MCP server" in dialog.get_by_label("connection kind").inner_text()  # SQL, REST and MCP are offered too
-    dialog.locator("input[type=file]").set_input_files(str(csv))
-    dialog.get_by_label("Synthetic test data only").check()
-    dialog.get_by_role("button", name="Upload").click()
-    dialog.get_by_role("button", name="Continue to field mapping").click()
-    page.get_by_role("heading", name="survey from customer_surveys_data").wait_for()
+    dialog.get_by_label("system", exact=True).select_option("csv")
+    dialog.get_by_label("system name").fill("survey_files")
+    dialog.get_by_label("first file").set_input_files(str(csv))
+    dialog.get_by_text("synthetic test data only").click()
+    dialog.get_by_role("button", name="Save & test").click()
+    systems.get_by_text("survey_files", exact=True).wait_for()
+    card.get_by_label("survey system").select_option("survey_files")
+    card.get_by_label("survey object").fill("surveys.csv")
+    card.get_by_label("survey link field").select_option("account_id")
+    card.get_by_role("button", name="Lock & map fields").click()
+    page.get_by_role("heading", name="survey from survey_files").wait_for()
     page.get_by_role("button", name="Suggest with AI").click()
     page.get_by_text("fake model").first.wait_for()
     page.get_by_role("button", name="Save mapping").click()
     page.get_by_text("Saved", exact=False).first.wait_for()
 
-    # 3. Add a warning sign for the section — the builder opens on its data and specialist.
+    # 3. Add a warning sign for the section — the builder opens on its data (read by the section's specialist).
     page.get_by_role("link", name="Data sources").click()
     card.get_by_role("button", name="+ Add warning sign").click()
     dialog = page.get_by_role("dialog")
     assert dialog.get_by_label("record type").input_value() == "survey"
-    assert dialog.get_by_label("specialist").input_value() == "customer_surveys"
     dialog.get_by_label("signal name").fill("low_survey_scores")
     dialog.get_by_role("button", name="+ condition").click()
     dialog.get_by_label("condition field").select_option("score")
@@ -234,6 +258,24 @@ def test_custom_section_in_the_ui(server, page, ctx, demo_config, tmp_path):
     assert dialog.locator("tr", has_text="A001").locator(".badge", has_text="high").count() == 1
     dialog.get_by_role("button", name="Save signal").click()
     page.locator("strong", has_text="low_survey_scores").wait_for()
+    assert page.locator("tr", has_text="low_survey_scores").get_by_text("Customer surveys").count() == 1  # its section
+
+    # 4. AI agents: the section is one more specialist, its instructions editable; the rules show in the full prompt.
+    page.get_by_role("link", name="AI agents").click()
+    surveys = page.locator(".agent", has=page.get_by_role("heading", name="Specialist: Customer surveys"))
+    surveys.get_by_text("low survey scores").wait_for()
+    surveys.get_by_label("customer_surveys instructions").fill("Low scores from executives matter most.")
+    surveys.get_by_role("button", name="Save").click()
+    page.get_by_text("Saved", exact=False).first.wait_for()
+    surveys.get_by_role("button", name="Show full prompt").click()
+    surveys.locator("pre", has_text="Low scores from executives matter most.").wait_for()  # the saved instructions, in the prompt
+    assert "Every evidence_ref must be" in surveys.locator("pre").inner_text()  # the fixed rules stay
+    assert page.get_by_role("heading", name="1. Coordinator").count() == 1 and page.get_by_role("heading", name="3. Synthesis").count() == 1
+    # Coordinator and synthesis show the instructions in use (not an empty box) and their full prompt.
+    synthesis = page.locator(".agent", has=page.get_by_role("heading", name="3. Synthesis"))
+    assert "Weigh severity and breadth" in synthesis.get_by_label("synthesis instructions").input_value()
+    assert synthesis.get_by_text("default", exact=True).count() == 1 and "Weigh severity" in synthesis.locator("pre").inner_text()
+    assert page.get_by_role("button", name="+ Add section (adds a specialist)").count() == 1
     assert errors == [], errors
 
 

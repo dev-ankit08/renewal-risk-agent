@@ -28,7 +28,7 @@ export default function Checklist() {
       .then((r) => {
         const accepted = r.mappings.reduce((n, m) => n + m.accepted.length, 0);
         const review = r.mappings.filter((m) => m.needs_review.length).length;
-        setNote(`Mapped ${accepted} field(s) automatically.${review ? ` ${review} data type(s) have fields to review on Field mapping.` : ""}`);
+        setNote(`Mapped ${accepted} field(s) automatically.${review ? ` ${review} data type(s) have fields to review — use Map fields on their Data sources row.` : ""}`);
         list.reload();
       })
       .catch((e: Error) => setNote(e.message))

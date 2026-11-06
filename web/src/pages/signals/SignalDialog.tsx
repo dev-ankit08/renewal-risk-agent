@@ -29,7 +29,6 @@ export default function SignalDialog({ initial, originalName, onClose, onSaved }
 
   const b = builder.data;
   useEffect(() => {
-    if (b && !spec.specialist) setSpec((s) => ({ ...s, specialist: b.specialists[0] }));
   }, [b]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Live "how it's calculated" — debounced, pure computation on the server.
@@ -74,17 +73,9 @@ export default function SignalDialog({ initial, originalName, onClose, onSaved }
 
           <div className="step"><span className="badge">2</span> Build it</div>
           <div key={formKey}>
-            <div className="row">
-              <div className="field" style={{ flex: 2 }}>
-                <label>Name <span className="hint">— lowercase_with_underscores</span></label>
-                <input value={spec.name} onChange={(e) => setSpec({ ...spec, name: e.target.value })} aria-label="signal name" />
-              </div>
-              <div className="field" style={{ flex: 1 }}>
-                <label>Specialist</label>
-                <select value={spec.specialist ?? ""} onChange={(e) => setSpec({ ...spec, specialist: e.target.value })} aria-label="specialist">
-                  {b.specialists.map((s) => <option key={s}>{s}</option>)}
-                </select>
-              </div>
+            <div className="field">
+              <label>Name <span className="hint">— lowercase_with_underscores; it is read by the specialist of the section holding its data</span></label>
+              <input value={spec.name} onChange={(e) => setSpec({ ...spec, name: e.target.value })} aria-label="signal name" />
             </div>
             <div className="field">
               <label>Description <span className="hint">— what this warning sign means for the account</span></label>

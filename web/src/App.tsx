@@ -11,12 +11,13 @@ import SignalsPage from "./pages/Signals";
 import SourcesPage from "./pages/Sources";
 
 const AccuracyPage = lazy(() => import("./pages/Accuracy"));
+const AgentsPage = lazy(() => import("./pages/Agents"));
 
 const NAV = [
   ["sources", "Data sources"],
-  ["mapping", "Field mapping"],
   ["matching", "Account matching"],
   ["signals", "Signals & playbooks"],
+  ["agents", "AI agents"],
   ["access", "Access & Slack"],
   ["health", "Health & feedback"],
   ["accuracy", "Accuracy"],
@@ -37,10 +38,11 @@ export default function App() {
   const [status, setStatus] = useState<Status | null>(null);
   const [admin, setAdmin] = useState<string | null | undefined>(undefined);
   const [route, params] = useHashRoute();
+  const page = route.split("/")[0];
 
+  const loadStatus = () => api.get<Status>("/status").then((s) => { setStatus(s); return s; });
   const refresh = () =>
-    api.get<Status>("/status").then((s) => {
-      setStatus(s);
+    loadStatus().then((s) => {
       if (!s.needs_setup) {
         api.get<{ email: string }>("/me")
           .then((m) => setAdmin(m.email))
@@ -50,14 +52,18 @@ export default function App() {
   useEffect(() => {
     refresh();
   }, []);
+  useEffect(() => { // the sidebar follows the setup (e.g. Account matching appears once it is needed)
+    if (status) loadStatus();
+  }, [page]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (!status) return <div className="center muted">Loading…</div>;
   if (status.needs_setup) return <SetupPage status={status} onDone={refresh} />;
   if (admin === undefined) return <div className="center muted">Loading…</div>;
   if (admin === null) return <LoginPage onDone={refresh} />;
 
-  const page = route.split("/")[0];
   const packLabel = status.packs.find((p) => p.name === status.pack)?.label ?? status.pack;
+  // Account matching only when a second system keeps its own customer list (or you are on it)
+  const nav = NAV.filter(([key]) => key !== "matching" || status.matching_needed || page === "matching");
   return (
     <div className="layout">
       <aside className="side">
@@ -65,8 +71,8 @@ export default function App() {
         <div className="pack">{packLabel}</div>
         <SetupProgress />
         <nav>
-          {NAV.map(([key, text], i) => (
-            <a key={key} href={`#/${key}`} className={page === key ? "active" : ""}>
+          {nav.map(([key, text], i) => (
+            <a key={key} href={`#/${key}`} className={page === key || (key === "sources" && page === "mapping") ? "active" : ""}>
               <span className="step">{i + 1}</span>
               {text}
             </a>
@@ -89,14 +95,15 @@ export default function App() {
             <button onClick={() => switchWorkspace("home")}>Switch back to your real setup</button>
           </div>
         )}
-        {page === "sources" && <SourcesPage params={params} status={status} onPackChange={refresh} />}
+        {page === "sources" && <SourcesPage params={params} status={status} onChange={loadStatus} />}
         {page === "mapping" && <MappingPage route={route} />}
         {page === "matching" && <MatchingPage />}
         {page === "signals" && <SignalsPage params={params} />}
         {page === "access" && <AccessPage />}
         {page === "health" && <HealthPage />}
         {page === "accuracy" && <Suspense fallback={null}><AccuracyPage /></Suspense>}
-        {!NAV.some(([k]) => k === page) && (
+        {page === "agents" && <Suspense fallback={null}><AgentsPage /></Suspense>}
+        {!NAV.some(([k]) => k === page) && page !== "mapping" && (
           <p>
             Unknown page. <a href="#/sources" onClick={() => go("sources")}>Go to data sources</a>
           </p>

@@ -12,7 +12,7 @@ type Dialog = { initial: SignalSpec | null; originalName: string | null };
 
 // A built-in duplicated as a starting point for a custom signal.
 const copyOf = (s: SignalRow): SignalSpec => ({
-  ...(s.spec ?? { rule: s.rule, specialist: s.specialist, thresholds: s.thresholds, direction: s.direction }),
+  ...(s.spec ?? { rule: s.rule, thresholds: s.thresholds, direction: s.direction }),
   name: `${s.name}_custom`.slice(0, 48), description: s.description, how_calculated_note: s.how_calculated_note,
 });
 
@@ -28,10 +28,10 @@ export default function SignalsPage({ params }: { params: URLSearchParams }) {
   const [error, setError] = useState("");
 
   useEffect(() => { if (data.data) setRows(data.data.signals); }, [data.data]);
-  useEffect(() => { // "+ Add warning sign" on a custom section: start a signal on its data, for its specialist
+  useEffect(() => { // "+ Add warning sign" on a custom section: start a signal on its data (read by its specialist)
     const entity = params.get("new");
     if (!entity) return;
-    setDialog({ initial: { name: "", rule: "count", entity, specialist: params.get("specialist") ?? undefined, thresholds: { medium: 1, high: 2 } }, originalName: null });
+    setDialog({ initial: { name: "", rule: "count", entity, thresholds: { medium: 1, high: 2 } }, originalName: null });
     go("signals");
   }, [params]);
   useEffect(() => { if (playbooks.data) setBook(playbooks.data); }, [playbooks.data]);
@@ -74,7 +74,7 @@ export default function SignalsPage({ params }: { params: URLSearchParams }) {
                     <tr>
                       <td><input type="checkbox" checked={s.enabled} onChange={(e) => setRow(i, { enabled: e.target.checked })} aria-label={`enable ${s.name}`} /></td>
                       <td>
-                        <strong>{s.name}</strong> <span className={`badge ${s.origin === "custom" ? "ok" : ""}`}>{s.origin}</span> <span className="badge">{s.specialist}</span>
+                        <strong>{s.name}</strong> <span className={`badge ${s.origin === "custom" ? "ok" : ""}`}>{s.origin}</span> <span className="badge" title="Read by this section's AI specialist">{s.area}</span>
                         <div className="muted small">{s.description}</div>
                         <button className="link small" onClick={() => setOpen(open === s.name ? null : s.name)} aria-expanded={open === s.name}>How it's calculated {open === s.name ? "▴" : "▾"}</button>
                       </td>

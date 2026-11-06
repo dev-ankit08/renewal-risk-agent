@@ -10,6 +10,7 @@ interface HealthData {
   daily: { day: string; assessments: number; cost_usd: number; high: number }[];
   recent: { id: number; account_id: string; account_name: string; score: number; band: string; cost_usd: number; created_at: number }[];
   model_configured: boolean;
+  matching_needed: boolean;
   actions: ActionSummary;
 }
 
@@ -53,15 +54,17 @@ export default function HealthPage() {
                 ))}
               </tbody></table>
             </div>
-            <div className="card">
-              <h3>Account matching</h3>
-              {h.linking ? Object.entries(h.linking.sources).map(([name, s]) => (
-                <div key={name} className="small" style={{ marginBottom: 8 }}>
-                  {name}: {Math.round(s.coverage * 100)}% matched{s.review.length ? `, ${s.review.length} to review` : ""}
-                  <div className="meter"><span style={{ width: `${Math.round(s.coverage * 100)}%` }} /></div>
-                </div>
-              )) : <p className="muted small">Not built yet — open Account matching.</p>}
-            </div>
+            {h.matching_needed && (
+              <div className="card">
+                <h3>Account matching</h3>
+                {h.linking ? Object.entries(h.linking.sources).map(([name, s]) => (
+                  <div key={name} className="small" style={{ marginBottom: 8 }}>
+                    {name}: {Math.round(s.coverage * 100)}% matched{s.review.length ? `, ${s.review.length} to review` : ""}
+                    <div className="meter"><span style={{ width: `${Math.round(s.coverage * 100)}%` }} /></div>
+                  </div>
+                )) : <p className="muted small">Not built yet — open Account matching.</p>}
+              </div>
+            )}
             <div className="card">
               <h3>Last 30 days</h3>
               <p>{h.daily.reduce((s, d) => s + d.assessments, 0)} assessments · {h.daily.reduce((s, d) => s + (d.high || 0), 0)} high risk · ${totalCost.toFixed(2)} model cost</p>
