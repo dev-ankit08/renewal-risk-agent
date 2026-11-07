@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { api, AuthMethod, Catalog, Category, SaveResult, Section, SourceInfo, Status, SystemOption } from "../api";
 import Checklist from "../Checklist";
-import { go, label, Modal, Notice, SaveFeedback, useLoad } from "../ui";
+import { Field, go, label, Modal, Notice, PageHead, SaveFeedback, Tip, useLoad } from "../ui";
 import DataTypeRow from "./sources/DataTypeRow";
 import SectionConnect from "./sources/SectionConnect";
 import SectionModal from "./sources/SectionModal";
@@ -48,22 +48,16 @@ export default function SourcesPage({ params, status, onChange }: { params: URLS
 
   return (
     <>
-      <div className="row">
-        <div>
-          <h2>Data sources</h2>
-          <p className="lead">Connect each system once, then choose for every kind of data which object it is read from.</p>
-        </div>
-        <span className="spacer" />
+      <PageHead title="Data sources" sub="Connect each system once, then choose which object each kind of data is read from."
+        help={<>Systems are signed in once at the top and can be used by any section. Each section below is read by its own AI specialist;
+          every data type in it is read from one object you pick and lock. Add a section for data your business type does not cover.</>}>
         <button onClick={() => setEditing("new")}>+ Add section</button>
         {cat && (
-          <label style={{ margin: 0 }}>
-            Business type{" "}
-            <select value={cat.pack.name} onChange={(e) => changePack(e.target.value)} style={{ width: "auto" }}>
-              {cat.packs.map((p) => <option key={p.name} value={p.name}>{p.label}</option>)}
-            </select>
-          </label>
+          <select value={cat.pack.name} onChange={(e) => changePack(e.target.value)} style={{ width: "auto" }} aria-label="business type" title="Business type">
+            {cat.packs.map((p) => <option key={p.name} value={p.name}>{p.label}</option>)}
+          </select>
         )}
-      </div>
+      </PageHead>
       {params.get("connected") && <Notice kind="ok">Connected {params.get("connected")}. Now pick its objects in the sections below.</Notice>}
       {params.get("oauth_error") && <Notice kind="bad">Sign-in failed: {params.get("oauth_error")}</Notice>}
       <Checklist />
@@ -73,10 +67,10 @@ export default function SourcesPage({ params, status, onChange }: { params: URLS
       <div className="card">
         <div className="row">
           <h3>Connected systems</h3>
+          <Tip>Sign in once; every section below can then read any of these systems. Keys are stored encrypted, never in config files.</Tip>
           <span className="spacer" />
           <button className="primary" onClick={() => setConnecting(true)}>+ Connect a system</button>
         </div>
-        <p className="muted">Sign in once; every section below can then read any of these systems.</p>
         {(sources.data?.sources ?? []).length === 0 && <p className="muted">Nothing connected yet.</p>}
         {(sources.data?.sources ?? []).map((s) => {
           const t = tests[s.name] ?? s.last_test;
@@ -107,6 +101,13 @@ export default function SourcesPage({ params, status, onChange }: { params: URLS
         <div className="card" key={c.key}>
           <div className="row">
             <h3>{c.label}</h3>
+            {(c.description || c.section) && (
+              <Tip wide>
+                {c.description}
+                {c.section && <><br /><br />Data type <strong>{label(c.section.data_type.name)}</strong>: {c.section.data_type.fields.map((f) => label(f.name)).join(", ")}.
+                  <br />Its specialist looks for: {c.section.focus}</>}
+              </Tip>
+            )}
             {c.custom && <span className="badge ok">custom section</span>}
             {c.required && <span className="badge">required</span>}
             {c.rows.every((r) => r.locked) ? <span className="badge ok">objects locked</span>
@@ -121,14 +122,6 @@ export default function SourcesPage({ params, status, onChange }: { params: URLS
               </>
             )}
           </div>
-          <p className="muted">{c.description}</p>
-          {c.section && (
-            <p className="small">
-              <span className="muted">Data type</span> <strong>{label(c.section.data_type.name)}</strong>{" "}
-              <span className="muted">({c.section.data_type.fields.map((f) => label(f.name)).join(", ")})</span>
-              <br /><span className="muted">Its specialist looks for:</span> {c.section.focus}
-            </p>
-          )}
           {c.rows.map((r) => <DataTypeRow key={`${r.entity}:${r.source}:${r.object}:${r.locked}`} row={r} connected={connected} onSaved={saved} />)}
         </div>
       ))}
@@ -209,15 +202,16 @@ function ConnectModal(props: {
 
   return (
     <Modal title="Connect a system" onClose={props.onClose}>
-      <label>System</label>
-      <select value={choice} onChange={(e) => pick(e.target.value)} aria-label="system">
-        {props.systems.map((s) => <option key={s.preset} value={s.preset}>{s.label}</option>)}
-        <option value="sql">Database (SQL)</option>
-        <option value="csv">CSV / Excel files</option>
-      </select>
-      {system && <p className="muted small">{system.description}</p>}
-      <label>Name <span className="hint">— a short id, e.g. crm, billing, support</span></label>
-      <input value={name} onChange={(e) => setName(e.target.value.toLowerCase().replace(/[^a-z0-9_]/g, ""))} aria-label="system name" />
+      <Field label="System" tip={system?.description ?? (choice === "sql" ? "Any SQL database, read-only: its tables appear as objects in each section." : "Upload CSV or Excel files; each file appears as an object.")}>
+        <select value={choice} onChange={(e) => pick(e.target.value)} aria-label="system">
+          {props.systems.map((s) => <option key={s.preset} value={s.preset}>{s.label}</option>)}
+          <option value="sql">Database (SQL)</option>
+          <option value="csv">CSV / Excel files</option>
+        </select>
+      </Field>
+      <Field label="Name" tip="A short id used in settings, e.g. crm, billing, support.">
+        <input value={name} onChange={(e) => setName(e.target.value.toLowerCase().replace(/[^a-z0-9_]/g, ""))} aria-label="system name" />
+      </Field>
       {system && system.auth_methods.length > 1 && (
         <>
           <label>How to sign in</label>
@@ -230,28 +224,28 @@ function ConnectModal(props: {
           ))}
         </>
       )}
-      {auth?.help && <pre>{auth.help}</pre>}
-      {auth?.oauth && <p className="small">Callback URL to register: <code>{props.callbackUrl}</code></p>}
+      {auth?.help && (
+        <details className="explain">
+          <summary>How to get these details</summary>
+          <pre>{auth.help}</pre>
+          {auth.oauth && <p className="small">Callback URL to register: <code>{props.callbackUrl}</code></p>}
+        </details>
+      )}
       {auth?.params.map((p) => (
-        <div key={p.name}>
-          <label>{p.label}{p.required && " *"} {p.description && <span className="hint">— {p.description}</span>}</label>
-          <input type={p.secret ? "password" : "text"} autoComplete="off" value={values[p.name] ?? ""}
-            placeholder={p.secret ? "stored encrypted; never written to config files" : p.default ?? ""}
+        <Field key={p.name} label={<>{p.label}{p.required && " *"}</>} tip={p.description || (p.secret ? "Stored encrypted; never written to config files." : undefined)}>
+          <input type={p.secret ? "password" : "text"} autoComplete="off" value={values[p.name] ?? ""} placeholder={p.secret ? "stored encrypted" : p.default ?? ""}
             onChange={(e) => setValues({ ...values, [p.name]: e.target.value })} />
-        </div>
+        </Field>
       ))}
       {choice === "sql" && (
-        <>
-          <label>Connection string (DSN) <span className="hint">— e.g. postgresql+psycopg://reader:…@host/db; stored encrypted</span></label>
+        <Field label="Connection string (DSN)" tip={<>For example <code>postgresql+psycopg://reader:…@host/db</code>. Stored encrypted. Read-only: only SELECT queries are ever run.</>}>
           <input type="password" autoComplete="off" value={values.dsn ?? ""} onChange={(e) => setValues({ ...values, dsn: e.target.value })} aria-label="dsn" />
-          <p className="muted small">Read-only: only SELECT queries are ever run. Its tables appear as objects in each section.</p>
-        </>
+        </Field>
       )}
       {choice === "csv" && (
-        <>
-          <label>First file <span className="hint">— more can be uploaded later; each file appears as an object</span></label>
+        <Field label="First file" tip="More can be uploaded later; each file appears as an object.">
           <input type="file" accept=".csv,.xlsx" onChange={(e) => setFile(e.target.files?.[0] ?? null)} aria-label="first file" />
-        </>
+        </Field>
       )}
       <label style={{ fontWeight: 400 }}>
         <input type="checkbox" checked={testData} onChange={(e) => setTestData(e.target.checked)} /> This is a sandbox with synthetic test data only

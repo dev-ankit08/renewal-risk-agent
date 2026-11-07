@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { api, Linking, SaveResult } from "../api";
-import { Notice, SaveFeedback, useLoad } from "../ui";
+import { Notice, PageHead, SaveFeedback, useLoad } from "../ui";
 
 const RULES = [
   { key: "key", label: "They store our account id", rule: { match: "key_account_id = account.id" } },
@@ -28,14 +28,10 @@ export default function MatchingPage() {
   const d = linking.data;
   return (
     <>
-      <div className="row">
-        <div>
-          <h2>Account matching</h2>
-          <p className="lead">How each system's customers line up with your primary account list.</p>
-        </div>
-        <span className="spacer" />
+      <PageHead title="Account matching" sub="How each system's customers line up with your primary account list."
+        help="Needed when another system keeps its own customer list (e.g. Stripe customers). Rules are tried in order; similar names are never matched automatically — a person clicks Match.">
         <button disabled={busy} onClick={rebuild}>{busy ? "Matching…" : "Re-run matching"}</button>
-      </div>
+      </PageHead>
       <Notice kind="bad">{linking.error || error}</Notice>
       <SaveFeedback result={result} />
       {d?.note && <Notice>{d.note}</Notice>}
@@ -74,7 +70,7 @@ export default function MatchingPage() {
                       <tr key={`${r.customer_id}-${r.account_id}`}>
                         <td>{r.customer_name ?? r.customer_id} <code>{r.customer_id}</code></td>
                         <td>{r.account_name ?? r.account_id}</td>
-                        <td className="muted">{r.reason}{r.score ? ` (${Math.round(r.score * 100)}%)` : ""}</td>
+                        <td className="muted small">{r.reason}{r.score ? ` (${Math.round(r.score * 100)}%)` : ""}</td>
                         <td className="row">
                           <button className="primary" onClick={() => decide(name, r.account_id, r.customer_id, "approved")}>Match</button>
                           <button onClick={() => decide(name, r.account_id, r.customer_id, "rejected")}>Not a match</button>

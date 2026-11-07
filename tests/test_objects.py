@@ -80,6 +80,17 @@ def test_lock_an_object_then_map(admin, demo_config):
     assert "support" in get_context().engine.pool.providers("ticket")
     assert "ticket" not in (yaml.safe_load((demo_config / "connectors.yaml").read_text(encoding="utf-8"))["assign"])
 
+    # Removing a system unlocks the data types read from it (no assignment left pointing at nothing).
+    assert admin.put("/admin/api/assign/ticket", json={"source": "helpdesk", "object": "tickets.csv", "link": "OrgId"}).json()["ok"]
+    r = admin.delete("/admin/api/sources/helpdesk").json()
+    assert r["ok"] and not r["errors"], r
+    assert "ticket" not in (yaml.safe_load((demo_config / "connectors.yaml").read_text(encoding="utf-8")).get("assign") or {})
+
+    # A login email in the consumer key field is refused before anything is stored.
+    r = admin.put("/admin/api/sources/sf", json={"preset": "salesforce", "auth_method": "oauth2",
+                                                 "params": {"client_id": "me@example.com"}, "secrets": {"client_secret": "pw"}})
+    assert r.status_code == 400 and "not your login email" in r.json()["detail"]
+
 
 def test_sql_tables_and_assigning_the_customer_list(admin, demo_config):
     from renewal_risk.service.context import get_context

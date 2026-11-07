@@ -264,6 +264,9 @@ def save_source(name: str, body: SourceBody, admin: str = Depends(auth.current_a
         raise HTTPException(400, f"unknown system '{body.preset}'")
     if not body.preset and body.type not in ("csv", "rest", "sql", "mcp"):
         raise HTTPException(400, "choose a system (preset) or a generic type")
+    if "@" in str((body.params or {}).get("client_id", "")):  # a login email typed where the app's key belongs
+        raise HTTPException(400, "the client id / consumer key comes from the OAuth app you created in the system "
+                                 "(e.g. Salesforce Connected App), not your login email — and never enter your password here")
 
     def change():
         doc = store.read("connectors.yaml")
@@ -310,6 +313,8 @@ def delete_source(name: str, admin: str = Depends(auth.current_admin)) -> dict:
         doc = store.read("connectors.yaml")
         (doc.get("sources") or {}).pop(name, None)
         (doc.get("linking") or {}).pop(name, None)
+        if doc.get("assign"):  # data types read from it go back to "pick an object"
+            doc["assign"] = {e: a for e, a in doc["assign"].items() if (a or {}).get("source") != name}
         if doc.get("primary") == name:
             doc["primary"] = next(iter(doc.get("sources") or {}), None)
         store.write("connectors.yaml", doc, admin)
@@ -1336,13 +1341,17 @@ class BacktestBody(BaseModel):
     start: str
     end: str
     lead_days: int | None = None
+    mode: str = "auto"  # live = what the agent said at the time, replay = rebuilt from history, auto = live when it can
 
 
 @router.post("/backtest")
 def run_backtest(body: BacktestBody, admin: str = Depends(auth.current_admin)) -> dict:
+    if body.mode not in ("auto", "live", "replay"):
+        raise HTTPException(400, "mode is auto, live or replay")
     ctx = get_context()
     store = config_store(ctx)
-    result = backtest.run(ctx.engine, body.start, body.end, body.lead_days, backtest.read_outcomes(store.read_text("outcomes.csv") or ""))
+    result = backtest.run(ctx.engine, body.start, body.end, body.lead_days, backtest.read_outcomes(store.read_text("outcomes.csv") or ""),
+                          mode=body.mode, predictions_for=ctx.store.predictions_for)
     if "error" in result:
         raise HTTPException(400, result["error"])
     result["run_at"] = time.time()
@@ -1353,7 +1362,8 @@ def run_backtest(body: BacktestBody, admin: str = Depends(auth.current_admin)) -
 @router.get("/backtest")
 def last_backtest(admin: str = Depends(auth.current_admin)) -> dict:
     path = get_context().settings.state_dir / "backtest.json"
-    return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    last = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    return last if "calibration" in last else {}  # a run saved by an older version: run it again
 
 
 @router.post("/backtest/outcomes")
@@ -1371,20 +1381,27 @@ async def upload_outcomes(file: UploadFile = File(...), admin: str = Depends(aut
 class ScoringBody(BaseModel):
     weights: dict
     thresholds: dict
+    signal_factors: dict | None = None
 
 
 @router.put("/rules")
 def save_rules(body: ScoringBody, admin: str = Depends(auth.current_admin)) -> dict:
-    """Apply scoring weights (e.g. the backtest's suggestion) — versioned in agent.yaml."""
+    """Apply scoring (e.g. the backtest's suggestion) — versioned in agent.yaml."""
     weights = {k: int(body.weights[k]) for k in ("high", "medium", "low") if k in body.weights}
     thresholds = {k: int(body.thresholds[k]) for k in ("high", "medium") if k in body.thresholds}
     if len(weights) != 3 or len(thresholds) != 2 or not 0 < thresholds["medium"] < thresholds["high"] <= 100:
         raise HTTPException(400, "give weights for high, medium and low, and thresholds 0 < medium < high <= 100")
-    store = config_store(get_context())
+    ctx = get_context()
+    known = {s["name"] for s in ctx.settings.signals}
+    factors = {k: round(float(v), 2) for k, v in (body.signal_factors or {}).items() if k in known and 0.25 <= float(v) <= 4}
+    store = config_store(ctx)
 
     def change():
         doc = store.read("agent.yaml")
-        doc["rules"] = {**(doc.get("rules") or {}), "weights": weights, "thresholds": thresholds}
+        rules = {**(doc.get("rules") or {}), "weights": weights, "thresholds": thresholds}
+        if body.signal_factors is not None:
+            rules["signal_factors"] = factors
+        doc["rules"] = rules
         store.write("agent.yaml", doc, admin)
     return _apply(change)
 

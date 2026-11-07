@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { ActionSummary, api } from "../api";
-import { Notice, useLoad } from "../ui";
+import { Notice, PageHead, Tip, useLoad } from "../ui";
 
 interface HealthData {
   errors: string[];
@@ -29,8 +29,7 @@ export default function HealthPage() {
   const totalCost = h?.daily.reduce((s, d) => s + (d.cost_usd || 0), 0) ?? 0;
   return (
     <>
-      <h2>Health & feedback</h2>
-      <p className="lead">Is everything connected, what is it costing, and is the agent right?</p>
+      <PageHead title="Health & feedback" sub="Is everything connected, what is it costing, and is the agent right?" />
       <Notice kind="bad">{health.error}</Notice>
       {h && (
         <>
@@ -68,18 +67,18 @@ export default function HealthPage() {
             <div className="card">
               <h3>Last 30 days</h3>
               <p>{h.daily.reduce((s, d) => s + d.assessments, 0)} assessments · {h.daily.reduce((s, d) => s + (d.high || 0), 0)} high risk · ${totalCost.toFixed(2)} model cost</p>
-              {!h.model_configured && <Notice kind="warn">ANTHROPIC_API_KEY is not set — full assessments and AI mapping are unavailable.</Notice>}
+              {!h.model_configured && <Notice kind="warn">No AI key: answers use the free rules.<Tip>Add ANTHROPIC_API_KEY to the .env file and restart the service to switch on AI answers and AI mapping.</Tip></Notice>}
             </div>
             <div className="card">
-              <h3>Actions (last 30 days)</h3>
+              <div className="row"><h3>Actions (last 30 days)</h3>
+                <Tip>{h.actions.total} recommended actions sent to their owners. Details: Signals & playbooks › Owners & notifications.</Tip></div>
               <p>{h.actions.open} open · {h.actions.done} done · <strong>{h.actions.overdue} overdue</strong>
                 {h.actions.completion_rate !== null && <> · {Math.round(h.actions.completion_rate * 100)}% completed</>}</p>
-              <p className="muted small">{h.actions.total} recommended actions sent to their owners. Details: Signals & playbooks › Owners & notifications.</p>
             </div>
           </div>
           <div className="card">
-            <h3>Recent assessments — was the agent right?</h3>
-            <p className="muted small">Your verdicts and the real outcomes are kept with each answer. To measure accuracy on renewals that already closed, open Accuracy.</p>
+            <div className="row"><h3>Recent assessments — was the agent right?</h3>
+              <Tip>Your verdicts and the real outcomes are kept with each answer. To measure accuracy on renewals that already closed, open Accuracy.</Tip></div>
             <table>
               <thead><tr><th>Account</th><th>Risk</th><th>When</th><th>Your verdict</th><th>Actual outcome</th></tr></thead>
               <tbody>

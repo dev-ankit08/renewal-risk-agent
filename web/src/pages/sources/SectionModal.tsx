@@ -3,7 +3,7 @@
 // Salesforce object instead of typed by hand.
 import { useState } from "react";
 import { api, FieldType, SaveResult, Section, SectionField } from "../../api";
-import { Modal, Notice } from "../../ui";
+import { Field, Modal, Notice, Tip } from "../../ui";
 
 const TYPES: Record<FieldType, string> = { str: "text", num: "number", date: "date", bool: "yes / no", list: "list" };
 const STANDARD = new Set(["id", "account_id", "created_at", "updated_at"]);
@@ -67,21 +67,23 @@ export default function SectionModal({ section, salesforce, onClose, onSaved }: 
 
   return (
     <Modal title={editing ? `Edit section: ${s.label}` : "Add a data section"} onClose={onClose}>
-      <p className="muted small">A section brings a new kind of data into the agent — e.g. survey answers, product feedback, contract
-        health checks — and gets its own specialist that reads it and reports what it finds.</p>
       <div className="row">
-        <div className="field" style={{ flex: 2 }}><label>Section name</label>
-          <input value={s.label} onChange={(e) => setLabel(e.target.value)} placeholder="e.g. Customer surveys" aria-label="section name" /></div>
-        <div className="field" style={{ flex: 1 }}><label>Key <span className="hint">— fixed once saved</span></label>
-          <input value={s.key} disabled={editing} onChange={(e) => setS({ ...s, key: slug(e.target.value) })} aria-label="section key" /></div>
+        <div style={{ flex: 2 }}>
+          <Field label={<>Section name<Tip>A section brings a new kind of data into the agent (survey answers, product feedback, contract health checks…) and gets its own specialist that reads it and reports what it finds.</Tip></>}>
+            <input value={s.label} onChange={(e) => setLabel(e.target.value)} placeholder="e.g. Customer surveys" aria-label="section name" /></Field>
+        </div>
+        <div style={{ flex: 1 }}>
+          <Field label="Key" tip="Fixed once saved.">
+            <input value={s.key} disabled={editing} onChange={(e) => setS({ ...s, key: slug(e.target.value) })} aria-label="section key" /></Field>
+        </div>
       </div>
       <div className="field"><label>Description</label>
         <input value={s.description} onChange={(e) => setS({ ...s, description: e.target.value })} placeholder="e.g. NPS and CSAT answers from our survey tool" aria-label="section description" /></div>
 
       <div className="step"><span className="badge">1</span> The data</div>
       <div className="row">
-        <div className="field" style={{ flex: 1 }}><label>Data type name <span className="hint">— one record is one…</span></label>
-          <input value={dt.name} disabled={editing} onChange={(e) => { setNamed(true); setDt({ name: slug(e.target.value) }); }} placeholder="survey" aria-label="data type name" /></div>
+        <div style={{ flex: 1 }}><Field label="Data type name" tip="One record is one… (e.g. survey).">
+          <input value={dt.name} disabled={editing} onChange={(e) => { setNamed(true); setDt({ name: slug(e.target.value) }); }} placeholder="survey" aria-label="data type name" /></Field></div>
         <div className="field" style={{ flex: 2 }}><label>What one record is</label>
           <input value={dt.description} onChange={(e) => setDt({ description: e.target.value })} placeholder="One survey answer from a customer contact" aria-label="data type description" /></div>
       </div>
@@ -98,7 +100,7 @@ export default function SectionModal({ section, salesforce, onClose, onSaved }: 
         )}
       </div>
       <table className="fields">
-        <thead><tr><th>Field</th><th>Type</th><th>What it means <span className="hint">— the AI maps source fields by this</span></th><th /></tr></thead>
+        <thead><tr><th>Field</th><th>Type</th><th>What it means<Tip>The AI maps source fields by this.</Tip></th><th /></tr></thead>
         <tbody>
           {dt.fields.map((f, i) => (
             <tr key={i}>
@@ -111,13 +113,15 @@ export default function SectionModal({ section, salesforce, onClose, onSaved }: 
           ))}
         </tbody>
       </table>
-      <button className="link" onClick={() => setDt({ fields: [...dt.fields, { name: "", type: "str", description: "" }] })}>+ field</button>
-      <p className="muted small">Added automatically: id, account id, created at, updated at. Free-text fields (comments, notes…) are left out — they never reach the AI.</p>
-      <div className="field"><label>When did it happen? <span className="hint">— the date the agent uses to keep to the assessment date</span></label>
+      <div className="row">
+        <button className="link" onClick={() => setDt({ fields: [...dt.fields, { name: "", type: "str", description: "" }] })}>+ field</button>
+        <Tip>Added automatically: id, account id, created at, updated at. Free-text fields (comments, notes…) are left out — they never reach the AI.</Tip>
+      </div>
+      <Field label="When did it happen?" tip="The date the agent uses to keep to the assessment date.">
         <select value={dt.date_field} onChange={(e) => setDt({ date_field: e.target.value })} aria-label="date field">
           <option value="created_at">created at (when the record was created)</option>
           {dateFields.map((f) => <option key={f.name} value={f.name}>{f.name}</option>)}
-        </select></div>
+        </select></Field>
 
       <div className="step"><span className="badge">2</span> Its specialist</div>
       <div className="field"><label>What should the specialist look for?</label>

@@ -46,6 +46,8 @@ rules:
   weights: {high: 35, medium: 15, low: 5}   # points per fired warning sign, capped at 100
   thresholds: {high: 70, medium: 40}        # score at or above -> band
   min_coverage: 0.4                          # below this share of warning signs checked, nothing fired = "Not enough data"
+  same_section_factor: 0.5                   # per data section: strongest sign in full, each further one x this (1 = no discount)
+  signal_factors: {}                         # {signal: multiplier on its points}, learned from outcomes on Accuracy
 
 # Backtest: how a closed renewal's outcome is read from the CRM (an uploaded outcomes.csv wins).
 backtest:

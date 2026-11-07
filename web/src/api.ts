@@ -67,6 +67,19 @@ export interface Checklist {
 export interface Rules {
   weights: Record<"high" | "medium" | "low", number>;
   thresholds: Record<"high" | "medium", number>;
+  signal_factors?: Record<string, number>;
+}
+
+export interface ThresholdSuggestion {
+  name: string;
+  direction: "above" | "below";
+  current: { medium: number | null; high: number | null };
+  measured: number;
+  losses: number;
+  status: "not_enough" | "no_signal" | "same" | "suggested";
+  suggested?: { medium: number; high: number | null };
+  now?: { caught: number; false_alarms: number };
+  then?: { caught: number; false_alarms: number };
 }
 
 export interface BacktestMetrics {
@@ -89,12 +102,18 @@ export interface BacktestCase {
   predicted: boolean;
   score: number;
   enough: boolean;
-  checked: number;
-  total: number;
+  checked?: number;
+  total?: number;
+  band_then?: string;
   fired: { name: string; severity: string }[];
 }
 
 export interface Backtest {
+  mode: "live" | "replay";
+  live_available: number;
+  closed: number;
+  calibration: { band: "high" | "medium" | "low"; renewals: number; lost: number; share: number | null }[];
+  thresholds: ThresholdSuggestion[];
   window: { start: string; end: string };
   lead_days: number;
   tested: number;

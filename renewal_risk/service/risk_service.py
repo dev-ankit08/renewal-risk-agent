@@ -137,6 +137,15 @@ class RiskService:
 
     # -- portfolio / window --------------------------------------------------
 
+    def record_screen(self, row: dict, screen: dict, source: str) -> dict:
+        """Keep what the quick check said about an open renewal, to compare with its outcome later."""
+        if row.get("renewal_ref"):
+            try:
+                self.store.record_prediction(row, screen, source)
+            except Exception as exc:  # noqa: BLE001 - never fail an answer because the log could not be written
+                print(f"could not record prediction for {row['account_id']}: {exc}", file=sys.stderr)
+        return screen
+
     def portfolio(self, principal: Principal, start: date, end: date, band_filter: str = "any",
                   label: str | None = None, deep: bool = True) -> dict:
         principal.require("bulk")
@@ -146,7 +155,7 @@ class RiskService:
 
         def screen(row):
             try:
-                return {**row, "screen": self.engine.prescreen(row["account_id"], today)}
+                return {**row, "screen": self.record_screen(row, self.engine.prescreen(row["account_id"], today), "portfolio")}
             except Exception as exc:  # noqa: BLE001 - keep the rest of the portfolio
                 return {**row, "screen": None, "error": f"{type(exc).__name__}: {exc}"}
 

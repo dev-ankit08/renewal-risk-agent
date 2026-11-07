@@ -3,7 +3,7 @@
 // section's data-type row instead.)
 import { useState } from "react";
 import { api, Category, SaveResult } from "../../api";
-import { go, Modal, Notice } from "../../ui";
+import { Field, go, Modal, Notice } from "../../ui";
 
 type Kind = "rest" | "mcp";
 const KINDS: Record<Kind, string> = { rest: "REST API", mcp: "MCP server" };
@@ -53,13 +53,14 @@ export default function SectionConnect({ category, onClose, onSaved }: Props) {
 
   return (
     <Modal title={`Connect: ${category.label}`} onClose={onClose}>
-      <label>Where does this data live?</label>
-      <select value={kind} onChange={(e) => { setKind(e.target.value as Kind); setName(`${category.key}_${e.target.value}`); }} aria-label="connection kind">
-        {(Object.keys(KINDS) as Kind[]).map((k) => <option key={k} value={k}>{KINDS[k]}</option>)}
-      </select>
-      <p className="muted small">{HELP[kind]}</p>
-      <label>Source name <span className="hint">— a short id</span></label>
-      <input value={name} onChange={(e) => setName(e.target.value.toLowerCase().replace(/[^a-z0-9_]/g, ""))} aria-label="source name" />
+      <Field label="Where does this data live?" tip={HELP[kind]}>
+        <select value={kind} onChange={(e) => { setKind(e.target.value as Kind); setName(`${category.key}_${e.target.value}`); }} aria-label="connection kind">
+          {(Object.keys(KINDS) as Kind[]).map((k) => <option key={k} value={k}>{KINDS[k]}</option>)}
+        </select>
+      </Field>
+      <Field label="Source name" tip="A short id, e.g. surveys_api.">
+        <input value={name} onChange={(e) => setName(e.target.value.toLowerCase().replace(/[^a-z0-9_]/g, ""))} aria-label="source name" />
+      </Field>
       {kind === "rest" ? (
         <>
           {input("base_url", "Base URL", "https://api.example.com")}

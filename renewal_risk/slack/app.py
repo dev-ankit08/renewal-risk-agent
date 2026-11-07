@@ -312,6 +312,18 @@ class SlackNotifier:
             print(f"slack: could not DM {email}: {exc}", file=sys.stderr)
             return False
 
+    def post_channel(self, text: str) -> bool:
+        """A plain message to the alert channel (e.g. how earlier predictions turned out)."""
+        channel = (((get_context().settings.slack or {}).get("alerts") or {}).get("channel"))
+        if not channel:
+            return False
+        try:
+            self.client.chat_postMessage(channel=channel, text=text)
+            return True
+        except Exception as exc:  # noqa: BLE001
+            print(f"slack: could not post to {channel}: {exc}", file=sys.stderr)
+            return False
+
     def send_alert(self, view: dict, account: dict, previous_band: str | None) -> list[str]:
         ctx = get_context()
         alerts = (ctx.settings.slack or {}).get("alerts") or {}

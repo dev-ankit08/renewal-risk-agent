@@ -2,7 +2,7 @@
 // is read from, and the field that ties a record to its customer. Lock it, then map.
 import { useEffect, useState } from "react";
 import { api, Connected, DataTypeRow as Row, ObjectField, SaveResult, SystemObject } from "../../api";
-import { go, label, Notice } from "../../ui";
+import { go, label, Notice, Tip } from "../../ui";
 
 const CUSTOMER_LIST = new Set(["account", "customer"]);
 const LIKELY_LINK = /account|customer|client|company|org|tenant/i;
@@ -95,7 +95,7 @@ export default function DataTypeRow({ row, connected, onSaved }: Props) {
           </>
         )}
       </div>
-      {!row.locked && row.object && <div className="muted small">Now read from {row.object} in {row.source} (default) — lock to confirm or change it.</div>}
+      {!row.locked && row.object && <span className="small muted">default: {row.object} in {row.source}<Tip>Read from this object today. Lock to confirm it, or pick another object.</Tip></span>}
       <Notice kind="bad">{error}</Notice>
     </div>
   );

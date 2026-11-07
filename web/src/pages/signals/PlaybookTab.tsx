@@ -1,6 +1,7 @@
 // The company's approved actions: when these signals fire, recommend this, owned by that role.
 import { useState } from "react";
 import { Play, Playbooks } from "../../api";
+import { Field, Tip } from "../../ui";
 
 const blank = (owner: string): Play => ({
   id: "", name: "", description: "", signals: [], min_severity: "any", action: "", steps: [], owner_role: owner,
@@ -33,7 +34,10 @@ export default function PlaybookTab({ data, onChange, onSave }: Props) {
 
   return (
     <>
-      <p className="muted">When the chosen signals fire, the agent recommends your approved action (adapted to the account) and DMs its owner on Slack.</p>
+      <div className="row" style={{ marginBottom: 12 }}>
+        <strong>Approved actions</strong>
+        <Tip>When the chosen signals fire, the agent recommends your approved action (adapted to the account) and DMs its owner on Slack.</Tip>
+      </div>
       {plays.map((p, i) => (
         <div key={i} className="card play">
           <div className="row">
@@ -52,9 +56,9 @@ export default function PlaybookTab({ data, onChange, onSave }: Props) {
             ))}
           </div>
           <div className="field"><label>Recommended action</label><input value={p.action} onChange={(e) => set(i, { action: e.target.value })} aria-label="recommended action" /></div>
-          <div className="field"><label>Why it works <span className="hint">— shown to the owner</span></label><input value={p.description} onChange={(e) => set(i, { description: e.target.value })} aria-label="why it works" /></div>
-          <div className="field"><label>Steps <span className="hint">— one per line</span></label>
-            <textarea rows={3} value={p.steps.join("\n")} onChange={(e) => set(i, { steps: e.target.value.split("\n") })} aria-label="steps" /></div>
+          <Field label="Why it works" tip="Shown to the owner with the action."><input value={p.description} onChange={(e) => set(i, { description: e.target.value })} aria-label="why it works" /></Field>
+          <Field label="Steps" tip="One per line.">
+            <textarea rows={3} value={p.steps.join("\n")} onChange={(e) => set(i, { steps: e.target.value.split("\n") })} aria-label="steps" /></Field>
           <div className="row">
             <div className="field" style={{ flex: 2 }}><label>Owner</label>
               <select value={p.owner_role} onChange={(e) => set(i, { owner_role: e.target.value })} aria-label="owner role">
@@ -66,7 +70,7 @@ export default function PlaybookTab({ data, onChange, onSave }: Props) {
               </select></div>
             <div className="field" style={{ flex: 1 }}><label>Within (days)</label><input type="number" min={1} value={p.due_in_days} onChange={(e) => set(i, { due_in_days: Number(e.target.value) })} aria-label="due in days" /></div>
           </div>
-          <div className="field"><label>Runbook link <span className="hint">— optional</span></label><input value={p.link} placeholder="https://" onChange={(e) => set(i, { link: e.target.value })} aria-label="runbook link" /></div>
+          <Field label="Runbook link" tip="Optional: a page with how-to details, linked in the DM."><input value={p.link} placeholder="https://" onChange={(e) => set(i, { link: e.target.value })} aria-label="runbook link" /></Field>
           <div className="row">
             <label className="inline"><input type="checkbox" checked={p.notify} onChange={(e) => set(i, { notify: e.target.checked })} /> DM the owner on Slack</label>
             <span className="spacer" />

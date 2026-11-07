@@ -1,6 +1,6 @@
 import { FormEvent, useState } from "react";
 import { api, Status } from "../api";
-import { Notice } from "../ui";
+import { Field, Notice, Tip } from "../ui";
 
 export default function SetupPage({ status, onDone }: { status: Status; onDone: () => void }) {
   const [form, setForm] = useState({ setup_token: "", email: "", password: "", pack: status.packs[0]?.name ?? "saas" });
@@ -18,20 +18,23 @@ export default function SetupPage({ status, onDone }: { status: Status; onDone: 
   return (
     <form className="center card" onSubmit={submit}>
       <h2>Set up Renewal Risk</h2>
-      <p className="muted">Create the first admin account and choose how your business renews.</p>
+      <p className="sub">Create the first admin account and choose how your business renews.</p>
       <label>What kind of business is this?</label>
       {status.packs.map((p) => (
-        <label key={p.name} className="card" style={{ cursor: "pointer", fontWeight: 400, margin: "6px 0" }}>
+        <label key={p.name} className="inline" style={{ cursor: "pointer", display: "flex" }}>
           <input type="radio" name="pack" value={p.name} checked={form.pack === p.name} onChange={set("pack")} /> <strong>{p.label}</strong>
-          <div className="muted small">{p.description}</div>
+          {p.description && <Tip>{p.description}</Tip>}
         </label>
       ))}
-      <label>Setup token <span className="hint">— printed in the server console on start</span></label>
-      <input value={form.setup_token} onChange={set("setup_token")} required autoComplete="off" />
-      <label>Your email</label>
-      <input type="email" value={form.email} onChange={set("email")} required autoComplete="username" />
-      <label>Password <span className="hint">— at least 10 characters</span></label>
-      <input type="password" value={form.password} onChange={set("password")} minLength={10} required autoComplete="new-password" />
+      <Field label="Setup token" tip="Printed in the server console when the service starts.">
+        <input value={form.setup_token} onChange={set("setup_token")} required autoComplete="off" />
+      </Field>
+      <Field label="Your email">
+        <input type="email" value={form.email} onChange={set("email")} required autoComplete="username" />
+      </Field>
+      <Field label="Password" tip="At least 10 characters.">
+        <input type="password" value={form.password} onChange={set("password")} minLength={10} required autoComplete="new-password" />
+      </Field>
       <Notice kind="bad">{error}</Notice>
       <p>
         <button className="primary" disabled={busy}>Create admin & continue</button>

@@ -107,7 +107,8 @@ def test_admin_ui_end_to_end(server, page, ctx, demo_config, monkeypatch):
     support.get_by_role("button", name="Lock & map fields").click()
     page.get_by_role("heading", name="ticket from legacy").wait_for()
     page.get_by_role("button", name="Suggest with AI").click()
-    page.get_by_text("fake model").first.wait_for()
+    page.locator("td.small .tip-btn").first.hover()  # the suggestion's reason is in its tooltip
+    page.get_by_role("tooltip").get_by_text("fake model").wait_for()
     page.get_by_role("button", name="Preview").click()
     page.get_by_text("how legacy records will look").wait_for()
     page.get_by_role("button", name="Save mapping").click()
@@ -238,7 +239,8 @@ def test_custom_section_in_the_ui(server, page, ctx, demo_config, tmp_path):
     card.get_by_role("button", name="Lock & map fields").click()
     page.get_by_role("heading", name="survey from survey_files").wait_for()
     page.get_by_role("button", name="Suggest with AI").click()
-    page.get_by_text("fake model").first.wait_for()
+    page.locator("td.small .tip-btn").first.hover()  # the suggestion's reason is in its tooltip
+    page.get_by_role("tooltip").get_by_text("fake model").wait_for()
     page.get_by_role("button", name="Save mapping").click()
     page.get_by_text("Saved", exact=False).first.wait_for()
 

@@ -84,7 +84,7 @@ export default function App() {
           <a href="#/sources" onClick={(e) => { e.preventDefault(); api.post("/logout").then(() => setAdmin(null)); }}>Sign out</a>
           {" · "}
           <a href="/" target="_blank" rel="noreferrer">Ask page</a>
-          {!status.model_configured && <p className="badge warn">No ANTHROPIC_API_KEY: AI mapping uses rules only</p>}
+          {!status.model_configured && <p><span className="badge warn">Rules only — no AI key</span></p>}
         </div>
       </aside>
       <main>

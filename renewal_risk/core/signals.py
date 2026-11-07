@@ -138,6 +138,13 @@ def aggregate(rows: list[dict], fld: str | None, how: str | None):
     return sum(values) / len(values) if how == "avg" else sum(values)
 
 
+def threshold_direction(sig: dict) -> str:
+    """"above" when a bigger value is worse, "below" when a smaller one is (a ratio, by default)."""
+    if sig.get("rule") == "ratio":
+        return sig.get("direction", "below")
+    return sig.get("direction", "above") if sig.get("rule") == "count" else "above"
+
+
 def severity_for(value, thresholds: dict, direction: str = "above") -> str | None:
     if value is None:
         return None
@@ -189,7 +196,7 @@ def _rule_count(sig, records, as_of):
     if sig.get("window_days"):
         rows = _window(rows, sig.get("date_field", "created_at"), as_of, int(sig["window_days"]), 0)
     count = len(rows)
-    sev = severity_for(count, sig.get("thresholds", {}), sig.get("direction", "above"))
+    sev = severity_for(count, sig.get("thresholds", {}), threshold_direction(sig))
     evidence = pick(rows, f"latest:{sig.get('date_field', 'created_at')}") or (rows[0] if rows else None)
     text = render(sig.get("value_template"), f"{count} matching {sig.get('entity')} record(s)", count=count, window_days=sig.get("window_days"))
     return sev, count, text, evidence, None
@@ -327,7 +334,7 @@ def _rule_ratio(sig, records, as_of):
     if numerator is None or not denominator:
         return None, None, "", None, render(sig.get("gap_template"), f"{sig['name']} not evaluated — missing {num_spec.get('entity')} or {den_spec.get('entity')} data")
     ratio = numerator / denominator
-    sev = severity_for(ratio, sig.get("thresholds", {}), sig.get("direction", "below"))
+    sev = severity_for(ratio, sig.get("thresholds", {}), threshold_direction(sig))
     evidence = pick(num_rows, num_spec.get("agg") if ":" in str(num_spec.get("agg")) else None)
     text = render(sig.get("value_template"), f"{numerator:,.0f} / {denominator:,.0f} = {ratio:.0%}", numerator=numerator, denominator=denominator, ratio=ratio)
     return sev, round(ratio, 3), text, evidence, None
@@ -556,11 +563,13 @@ def required_entities(sig: dict) -> set[str]:
 
 
 def evaluate(signals: list[dict], records: dict[str, list[dict]], as_of: str, available: set[str]) -> dict[str, dict]:
-    """-> {specialist: {"signals": [...], "gaps": [...], "evidence_refs": [...], "checked": [names]}}
-    `checked` = signals that ran on real data (fired or not); the rest are gaps."""
+    """-> {specialist: {"signals": [...], "gaps": [...], "evidence_refs": [...], "checked": [names], "metrics": {name: value}}}
+    `checked` = signals that ran on real data (fired or not); the rest are gaps. `metrics` holds the
+    measured value of every checked signal, fired or not — what threshold suggestions learn from."""
     out: dict[str, dict] = {}
     for sig in signals:
-        bucket = out.setdefault(sig.get("specialist", "general"), {"signals": [], "gaps": [], "evidence_refs": [], "checked": []})
+        section = sig.get("specialist", "general")
+        bucket = out.setdefault(section, {"signals": [], "gaps": [], "evidence_refs": [], "checked": [], "metrics": {}})
         needed = required_entities(sig)
         missing = sorted(needed - available)
         # Partial availability is fine for multi-entity rules (activity from
@@ -588,9 +597,12 @@ def evaluate(signals: list[dict], records: dict[str, list[dict]], as_of: str, av
             if ref is None:
                 bucket["gaps"].append(f"{sig['name']} fired but had no record to cite — dropped")
                 continue
-            bucket["signals"].append({"name": sig["name"], "severity": severity, "value": text, "evidence_ref": ref, "metric": metric})
+            bucket["signals"].append({"name": sig["name"], "severity": severity, "value": text, "evidence_ref": ref, "metric": metric,
+                                      "section": section})
             bucket["evidence_refs"].append(ref)
         bucket["checked"].append(sig["name"])
+        if isinstance(metric, (int, float)) and not isinstance(metric, bool):
+            bucket["metrics"][sig["name"]] = metric
     return out
 
 

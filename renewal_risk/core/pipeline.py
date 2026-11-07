@@ -64,7 +64,11 @@ class RunResult:
         return asdict(self)
 
 
-RULES = {"weights": {"high": 35, "medium": 15, "low": 5}, "thresholds": {"high": 70, "medium": 40}, "min_coverage": 0.4}
+# same_section_factor: in one data section the strongest sign counts in full and each further one
+# this much (several signs read from the same tickets are one problem, not four).
+# signal_factors: {signal name: multiplier} on its severity points, learned from outcomes on Accuracy.
+RULES = {"weights": {"high": 35, "medium": 15, "low": 5}, "thresholds": {"high": 70, "medium": 40}, "min_coverage": 0.4,
+         "same_section_factor": 0.5, "signal_factors": {}}
 
 
 def rules_config(agent: dict) -> dict:
@@ -78,8 +82,18 @@ def band_for(score: float, thresholds: dict | None = None) -> str:
     return "high" if score >= t["high"] else "medium" if score >= t["medium"] else "low"
 
 
-def score_signals(fired: list[dict], weights: dict) -> int:
-    return min(100, sum(weights.get(s["severity"], 0) for s in fired))
+def signal_points(sig: dict, rules: dict) -> float:
+    return rules["weights"].get(sig["severity"], 0) * float((rules.get("signal_factors") or {}).get(sig["name"], 1))
+
+
+def score_signals(fired: list[dict], rules: dict) -> int:
+    """0-100: per data section the strongest sign in full, each further one × same_section_factor."""
+    factor = float(rules.get("same_section_factor", 1))
+    sections: dict[str, list[float]] = {}
+    for s in fired:
+        sections.setdefault(s.get("section") or s["name"], []).append(signal_points(s, rules))
+    total = sum(max(p) + factor * (sum(p) - max(p)) for p in sections.values())
+    return min(100, round(total))
 
 
 def coverage_verdict(candidates: dict[str, dict], total: int, min_coverage: float) -> dict:
@@ -95,9 +109,8 @@ def rules_assessment(account_id: str, packets: list[dict], playbooks: dict, rule
     """The no-AI assessment: score the fired signals and recommend the plays they
     trigger. Same shape as the model's, so every interface renders it unchanged."""
     rules = rules or RULES
-    weights = rules["weights"]
-    fired = sorted((s for p in packets for s in p["signals"]), key=lambda s: -weights.get(s["severity"], 0))
-    score = score_signals(fired, weights)
+    fired = sorted(({**s, "section": p["specialist"]} for p in packets for s in p["signals"]), key=lambda s: -signal_points(s, rules))
+    score = score_signals(fired, rules)
     actions = []
     for play in (playbooks or {}).get("plays") or []:
         hits = [s for s in fired if s["name"] in play["signals"]]
@@ -283,9 +296,10 @@ class Engine:
         return {
             "account_id": account_id, "as_of": as_of,
             "signals": all_signals, "high_count": high, "medium_count": medium,
-            "score": (score := score_signals(all_signals, self.rules["weights"])),
+            "score": (score := score_signals(all_signals, self.rules)),
             "band": band_for(score, self.rules["thresholds"]),  # the same scoring as a full rules-only answer
-            "flag": high > 0 or medium >= 2, "coverage": self.coverage(result),
+            "flag": band_for(score, self.rules["thresholds"]) != "low", "coverage": self.coverage(result),
+            "metrics": {k: v for bucket in result.values() for k, v in bucket["metrics"].items()},
             "gaps": gaps + [g for bucket in result.values() for g in bucket["gaps"]],
         }
 

@@ -2,7 +2,7 @@
 // settings, and what happened to the actions that were sent.
 import { useEffect, useState } from "react";
 import { ActionItem, ActionSettings, ActionSummary, api, OwnerRole, SaveResult } from "../../api";
-import { Notice, SaveFeedback, useLoad } from "../../ui";
+import { Notice, SaveFeedback, Tip, useLoad } from "../../ui";
 
 type How = "account_field" | "access_role" | "emails" | "";
 const HOW: Record<How, string> = { account_field: "a field on the account", access_role: "people with this access role", emails: "these email addresses", "": "nobody (label only)" };
@@ -28,8 +28,10 @@ export default function OwnersTab({ roles, onChange, onSave }: Props) {
   return (
     <>
       <div className="card">
-        <h3>Owner roles</h3>
-        <p className="muted">How the agent finds the person to DM for each account. People only ever hear about accounts they are allowed to see.</p>
+        <div className="row">
+          <h3>Owner roles</h3>
+          <Tip>How the agent finds the person to DM for each account. People only ever hear about accounts they are allowed to see.</Tip>
+        </div>
         {roles.map((r, i) => (
           <div className="row cond" key={i}>
             <input style={{ flex: 2 }} value={r.name} onChange={(e) => set(i, { name: e.target.value })} aria-label="role name" />

@@ -20,7 +20,7 @@ Run `renewal-risk serve` (or the Docker image) and open `http://<host>:8080/admi
 | 4 | AI agents | The coordinator, one specialist per data section, and the synthesis agent: edit each one's instructions (section 6b). |
 | 5 | Access & Slack | Add people (by their Slack email) with a role and scope, create API keys, paste the Slack tokens, and send a test message. |
 | 6 | Health & feedback | Shows what is still missing, connection status, cost, and recent assessments. Mark each assessment agree/disagree and record the real renewal outcome. |
-| 7 | Accuracy | Replays renewals that already closed and shows how many losses the agent would have caught (section 6). |
+| 7 | Accuracy | Compares what the agent said with what happened once renewals close (or replays history), and suggests scoring and a threshold per warning sign (section 6). |
 
 ### Quick start: the setup checklist and sample data
 
@@ -598,8 +598,17 @@ could be checked, the verdict is **"Not enough data"**, never "Low risk".
 - Such accounts get no alerts and no action DMs.
 - The details view lists exactly what couldn't be checked and why.
 
-**Accuracy: how often is it right?** The **Accuracy** screen replays renewals
-that already closed:
+**Accuracy: how often is it right?** The **Accuracy** screen compares the
+agent's calls on renewals that already closed with what actually happened. It
+gets those calls in one of two ways (**Using**: Auto picks the first one that
+has data):
+
+- **What it said then.** Every quick check of an open renewal is saved: Slack
+  lists, the ask page and the nightly scan, at most one per renewal per day.
+  When the renewal closes, the latest call made at least N days before it closed
+  (default 90) is compared with the outcome. Nothing is re-read. This is the
+  truest measure, and it builds up on its own as the agent is used.
+- **Replay history**, for before there are saved calls:
 
 - **Only the data that existed then is used.** Each renewal is judged as it
   looked a set number of days before it closed (default 90).
@@ -619,11 +628,32 @@ You get:
 
 - How many losses were caught, missed and falsely flagged.
 - A comparison with a naive "biggest deals first" list.
+- **Does "high risk" mean high risk?** For each risk level given, the share of
+  those renewals that were then lost or shrank.
 - The accuracy of each warning sign, with weak ones flagged for review.
-- Suggested scoring weights, which **Apply** writes to `agent.yaml` (versioned).
+- **Suggested scoring**, which **Apply** writes to `agent.yaml` (versioned):
+  points per severity, the band cut-offs, and a factor per warning sign learned
+  from how often it came before a loss. The factor is pulled towards 1 when
+  history is thin and kept between 0.5× and 2×.
+- **Thresholds per warning sign.** Each sign's measured value is kept for every
+  renewal, whether it fired or not. From those values:
+  - **Medium:** the cut that best separates lost renewals from renewed ones.
+  - **High:** the most lenient cut whose flags were lost at least twice as often
+    as average (and 60% or more of the time).
+  - **History needed:** at least 8 measured renewals, with 3 or more lost and 3
+    or more renewed.
+  
+  **Apply** saves the thresholds for that sign (versioned). Nothing changes on
+  its own.
 
 Signals that read a field holding only today's value (status, stage,
-open/closed…) are marked *approximate*. No AI is used, so it's free to run.
+open/closed…) are marked *approximate* in replay mode. No AI is used, so it's
+free to run.
+
+**Follow-up in Slack.** After each nightly scan, renewals that closed in the
+last 60 days and had a saved call are compared with their outcome, and posted
+once to the alert channel. For example: "2 renewals closed: the 1 loss was
+flagged 63 days ahead; 1 false alarm."
 
 ![Accuracy](screenshots/25-accuracy.png)
 
@@ -634,7 +664,14 @@ rules:
   weights: {high: 35, medium: 15, low: 5}   # points per fired warning sign, capped at 100
   thresholds: {high: 70, medium: 40}        # score at or above -> band
   min_coverage: 0.4                          # below this, nothing fired = "Not enough data"
+  same_section_factor: 0.5                   # per data section: strongest sign in full, the rest x 0.5
+  signal_factors: {}                         # {signal: multiplier}, learned on Accuracy
 ```
+
+Several signs that read the same records are one problem, not four. Within one
+data section the strongest sign counts in full and each further one counts half.
+For example, one bad support week with four ticket signs scores 68, not 100. Set
+`same_section_factor: 1` for the old behaviour.
 
 **Without an AI key (rules-only mode).** With no real `ANTHROPIC_API_KEY`, or
 with `llm.mode: rules` in `agent.yaml`, every answer is computed without a model

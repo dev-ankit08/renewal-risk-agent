@@ -56,6 +56,12 @@ CREATE TABLE IF NOT EXISTS action_items (
     snoozed_until REAL, created_at REAL NOT NULL, updated_at REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS action_items_key ON action_items(tenant_id, account_id, action_key, owner_email);
+CREATE TABLE IF NOT EXISTS predictions (
+    tenant_id TEXT NOT NULL DEFAULT 'default', renewal_ref TEXT NOT NULL, predicted_on TEXT NOT NULL,
+    account_id TEXT NOT NULL, account_name TEXT, close_date TEXT, amount REAL, score REAL, band TEXT, enough INTEGER,
+    fired TEXT NOT NULL, metrics TEXT NOT NULL, source TEXT, created_at REAL NOT NULL,
+    PRIMARY KEY (tenant_id, renewal_ref, predicted_on)
+);
 CREATE TABLE IF NOT EXISTS mapping_versions (
     id INTEGER PRIMARY KEY AUTOINCREMENT, tenant_id TEXT NOT NULL DEFAULT 'default',
     source TEXT NOT NULL, entity TEXT NOT NULL, fields TEXT NOT NULL, approved_by TEXT, created_at REAL NOT NULL
@@ -159,6 +165,30 @@ class Store:
         rows = self._all("SELECT id, account_id, account_name, as_of, score, band, cost_usd, created_at FROM assessments"
                          " WHERE tenant_id = ? ORDER BY created_at DESC LIMIT ?", (self.tenant_id, limit))
         return [dict(r) for r in rows]
+
+    # -- predictions: what the quick check said about an open renewal, kept to compare with the outcome --
+
+    def record_prediction(self, row: dict, screen: dict, source: str) -> None:
+        """One row per renewal per day (a later check the same day replaces it)."""
+        fired = [{k: s.get(k) for k in ("name", "severity", "metric", "section")} for s in screen.get("signals", [])]
+        self._write(
+            "INSERT OR REPLACE INTO predictions (tenant_id, renewal_ref, predicted_on, account_id, account_name, close_date, amount,"
+            " score, band, enough, fired, metrics, source, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (self.tenant_id, row["renewal_ref"], screen["as_of"], row["account_id"], row.get("name"), row.get("close_date"),
+             row.get("amount"), screen["score"], screen["band"], int(bool((screen.get("coverage") or {}).get("enough", True))),
+             json.dumps(fired, default=str), json.dumps(screen.get("metrics") or {}), source, time.time()),
+        )
+
+    def predictions_for(self, refs: list[str]) -> dict[str, list[dict]]:
+        """{renewal_ref: its predictions, oldest first} for the given renewals."""
+        out: dict[str, list[dict]] = {}
+        for i in range(0, len(refs), 500):
+            chunk = refs[i:i + 500]
+            rows = self._all(f"SELECT * FROM predictions WHERE tenant_id = ? AND renewal_ref IN ({','.join('?' * len(chunk))})"
+                             " ORDER BY predicted_on", (self.tenant_id, *chunk))
+            for r in rows:
+                out.setdefault(r["renewal_ref"], []).append({**dict(r), "fired": json.loads(r["fired"]), "metrics": json.loads(r["metrics"])})
+        return out
 
     # -- alerts --------------------------------------------------------------
 

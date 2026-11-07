@@ -2,7 +2,7 @@
 // from its screen — plus the two shortcuts, sample data and auto-mapping.
 import { useState } from "react";
 import { api, Checklist as Data, SaveResult } from "./api";
-import { go, Notice, useLoad } from "./ui";
+import { go, Notice, Tip, useLoad } from "./ui";
 
 export function useChecklist() {
   return useLoad(() => api.get<Data>("/setup/checklist"));
@@ -57,7 +57,7 @@ export default function Checklist() {
             {busy === "demo" ? "Loading sample data…" : "Try with sample data"}
           </button>
         )}
-        <span className="muted small">Sample data opens in a separate demo workspace — your setup is not changed.</span>
+        <Tip>Sample data opens in a separate demo workspace — your setup is not changed. Auto-map saves the confident field suggestions for every data type.</Tip>
       </div>
       <Notice kind="ok">{note}</Notice>
     </details>

@@ -1,6 +1,6 @@
 import { Fragment, lazy, Suspense, useEffect, useState } from "react";
 import { api, Playbooks, SaveResult, SignalRow, SignalSpec } from "../api";
-import { go, Notice, SaveFeedback, useLoad } from "../ui";
+import { go, Notice, PageHead, SaveFeedback, Tip, useLoad } from "../ui";
 import OwnersTab from "./signals/OwnersTab";
 import PlaybookTab from "./signals/PlaybookTab";
 
@@ -48,8 +48,8 @@ export default function SignalsPage({ params }: { params: URLSearchParams }) {
 
   return (
     <>
-      <h2>Signals & playbooks</h2>
-      <p className="lead">Which risk signals the agent looks for and how each is calculated, the actions your company prefers, and who gets them.</p>
+      <PageHead title="Signals & playbooks" sub="The warning signs the agent looks for, the actions you prefer, and who gets them."
+        help="Built-in signals come with your business type; add your own for the warning signs only your company knows. Thresholds can be tuned from real outcomes on the Accuracy page." />
       <div className="tabs" role="tablist">
         {(Object.keys(TABS) as Tab[]).map((t) => (
           <button key={t} role="tab" aria-selected={tab === t} className={tab === t ? "active" : ""} onClick={() => { setTab(t); setResult(null); }}>{TABS[t]}</button>
@@ -61,7 +61,6 @@ export default function SignalsPage({ params }: { params: URLSearchParams }) {
       {tab === "signals" && (
         <>
           <div className="row" style={{ marginBottom: 10 }}>
-            <span className="muted">Built-in signals come with your industry pack; add your own for the warning signs only your company knows.</span>
             <span className="spacer" />
             <button className="primary" onClick={() => setDialog({ initial: null, originalName: null })}>+ New signal</button>
           </div>
@@ -74,8 +73,9 @@ export default function SignalsPage({ params }: { params: URLSearchParams }) {
                     <tr>
                       <td><input type="checkbox" checked={s.enabled} onChange={(e) => setRow(i, { enabled: e.target.checked })} aria-label={`enable ${s.name}`} /></td>
                       <td>
-                        <strong>{s.name}</strong> <span className={`badge ${s.origin === "custom" ? "ok" : ""}`}>{s.origin}</span> <span className="badge" title="Read by this section's AI specialist">{s.area}</span>
-                        <div className="muted small">{s.description}</div>
+                        <strong>{s.name}</strong>{s.description && <Tip>{s.description}</Tip>} <span className={`badge ${s.origin === "custom" ? "ok" : ""}`}>{s.origin}</span>{" "}
+                        <span className="badge" title="Read by this section's AI specialist">{s.area}</span>
+                        <br />
                         <button className="link small" onClick={() => setOpen(open === s.name ? null : s.name)} aria-expanded={open === s.name}>How it's calculated {open === s.name ? "▴" : "▾"}</button>
                       </td>
                       {(["medium", "high"] as const).map((lvl) => (

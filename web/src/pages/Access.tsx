@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { api, SaveResult } from "../api";
-import { Notice, SaveFeedback, useLoad } from "../ui";
+import { Notice, PageHead, SaveFeedback, Tip, useLoad } from "../ui";
 
 type Scope = "all" | Record<string, string | string[]> | undefined;
 type Entry = { email?: string; domain?: string; role: string; scope?: Scope };
@@ -60,7 +60,8 @@ export default function AccessPage() {
 
   const table = (list: (Entry & { scopeText: string })[], set: (l: (Entry & { scopeText: string })[]) => void, key: "email" | "domain") => (
     <table>
-      <thead><tr><th>{key === "email" ? "Email (as in Slack)" : "Email domain"}</th><th>Role</th><th>Can see <span className="muted">(e.g. region=EMEA,UK; portfolio=Banking · all · empty = own accounts)</span></th><th /></tr></thead>
+      <thead><tr><th>{key === "email" ? "Email (as in Slack)" : "Email domain"}</th><th>Role</th>
+        <th>Can see<Tip><code>region=EMEA,UK; portfolio=Banking</code> limits to those accounts. <code>all</code> = every account. Empty = only accounts they own.</Tip></th><th /></tr></thead>
       <tbody>
         {list.map((u, i) => (
           <tr key={i}>
@@ -76,8 +77,8 @@ export default function AccessPage() {
 
   return (
     <>
-      <h2>Access & Slack</h2>
-      <p className="lead">Who can ask about which accounts — in Slack, the API and alerts. People not listed get nothing.</p>
+      <PageHead title="Access & Slack" sub="Who can ask about which accounts, and how Slack is connected."
+        help="Access applies everywhere: Slack, the API and alerts. People not listed get nothing." />
       <Notice kind="bad">{access.error || slack.error || error}</Notice>
       <SaveFeedback result={result} />
       <div className="card">
@@ -112,10 +113,11 @@ export default function AccessPage() {
       </div>
 
       <div className="card">
-        <h3>Slack</h3>
-        <p className="muted">Create the app from <code>slack_manifest.yaml</code> (api.slack.com/apps → From a manifest), install it, and paste its tokens.
-          {slack.data && <> Bot token {slack.data.bot_token_set ? <span className="badge ok">set</span> : <span className="badge warn">missing</span>} · App token {slack.data.app_token_set ? <span className="badge ok">set</span> : <span className="badge warn">missing</span>}</>}
-        </p>
+        <div className="row">
+          <h3>Slack</h3>
+          <Tip>Create the app from <code>slack_manifest.yaml</code> (api.slack.com/apps → From a manifest), install it, and paste its tokens.</Tip>
+          {slack.data && <span className="small">Bot token {slack.data.bot_token_set ? <span className="badge ok">set</span> : <span className="badge warn">missing</span>} · App token {slack.data.app_token_set ? <span className="badge ok">set</span> : <span className="badge warn">missing</span>}</span>}
+        </div>
         <div className="grid2">
           <div><label>Bot token (xoxb-…)</label><input type="password" placeholder="leave empty to keep" value={slackForm.bot_token} onChange={(e) => setSlackForm({ ...slackForm, bot_token: e.target.value })} /></div>
           <div><label>App token (xapp-…, Socket Mode)</label><input type="password" placeholder="leave empty to keep" value={slackForm.app_token} onChange={(e) => setSlackForm({ ...slackForm, app_token: e.target.value })} /></div>

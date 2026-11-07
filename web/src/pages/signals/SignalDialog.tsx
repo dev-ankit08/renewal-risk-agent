@@ -2,7 +2,7 @@
 // (form from the rule table, live explanation) -> test it on real accounts -> save.
 import { useEffect, useState } from "react";
 import { api, Builder, SignalSpec, SignalTest } from "../../api";
-import { Modal, Notice, useLoad } from "../../ui";
+import { Field, Modal, Notice, Tip, useLoad } from "../../ui";
 import RuleInputs from "./RuleInputs";
 
 const META = ["name", "description", "specialist", "rule", "how_calculated_note", "value_template", "enabled", "custom", "author", "created_at", "updated_at"];
@@ -28,8 +28,6 @@ export default function SignalDialog({ initial, originalName, onClose, onSaved }
   const [json, setJson] = useState<string | null>(null);
 
   const b = builder.data;
-  useEffect(() => {
-  }, [b]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Live "how it's calculated" — debounced, pure computation on the server.
   useEffect(() => {
@@ -73,21 +71,17 @@ export default function SignalDialog({ initial, originalName, onClose, onSaved }
 
           <div className="step"><span className="badge">2</span> Build it</div>
           <div key={formKey}>
-            <div className="field">
-              <label>Name <span className="hint">— lowercase_with_underscores; it is read by the specialist of the section holding its data</span></label>
+            <Field label="Name" tip="lowercase_with_underscores. It is read by the AI specialist of the section that holds its data.">
               <input value={spec.name} onChange={(e) => setSpec({ ...spec, name: e.target.value })} aria-label="signal name" />
-            </div>
-            <div className="field">
-              <label>Description <span className="hint">— what this warning sign means for the account</span></label>
+            </Field>
+            <Field label="Description" tip="What this warning sign means for the account.">
               <input value={spec.description ?? ""} onChange={(e) => setSpec({ ...spec, description: e.target.value })} aria-label="signal description" />
-            </div>
-            <div className="field">
-              <label>What to measure</label>
+            </Field>
+            <Field label="What to measure" tip={rule?.summary}>
               <select value={spec.rule} onChange={(e) => setSpec(ruleSpec({ ...spec, rule: e.target.value }, b))} aria-label="rule type">
                 {Object.entries(b.rules).map(([k, r]) => <option key={k} value={k}>{r.label}</option>)}
               </select>
-              {rule && <div className="muted small">{rule.summary}</div>}
-            </div>
+            </Field>
             {rule && json === null && <RuleInputs inputs={rule.inputs} spec={spec} rule={spec.rule ?? ""} builder={b} onChange={(s) => setSpec(s as SignalSpec)} />}
             {json !== null && (
               <div className="field">
@@ -95,14 +89,12 @@ export default function SignalDialog({ initial, originalName, onClose, onSaved }
                 <div className="row"><button onClick={applyJson}>Apply JSON</button><button className="link" onClick={() => setJson(null)}>Cancel</button></div>
               </div>
             )}
-            <div className="field">
-              <label>Message shown to users <span className="hint">— optional, e.g. "{"{count}"} urgent tickets open"</span></label>
+            <Field label="Message shown to users" tip={<>Optional, e.g. <code>{"{count}"} urgent tickets open</code>.</>}>
               <input value={spec.value_template ?? ""} onChange={(e) => setSpec({ ...spec, value_template: e.target.value || undefined })} aria-label="message template" />
-            </div>
-            <div className="field">
-              <label>Your note on how it's calculated <span className="hint">— optional, shown under the generated explanation</span></label>
+            </Field>
+            <Field label="Your note on how it's calculated" tip="Optional, shown under the generated explanation.">
               <textarea rows={2} value={spec.how_calculated_note ?? ""} onChange={(e) => setSpec({ ...spec, how_calculated_note: e.target.value })} aria-label="how it is calculated note" />
-            </div>
+            </Field>
             {json === null && <button className="link" onClick={() => setJson(JSON.stringify(spec, null, 2))}>Advanced: edit as JSON</button>}
           </div>
 
@@ -113,7 +105,7 @@ export default function SignalDialog({ initial, originalName, onClose, onSaved }
           </div>
           {preview && preview.errors.length > 0 && <Notice kind="warn"><ul>{preview.errors.map((e) => <li key={e}>{e}</li>)}</ul></Notice>}
 
-          <div className="step"><span className="badge">3</span> Test it on accounts renewing soon <span className="hint">— real data, no AI cost</span></div>
+          <div className="step"><span className="badge">3</span> Test it on accounts renewing soon <Tip>Real data, no AI cost.</Tip></div>
           <button onClick={runTest} disabled={busy !== ""}>{busy === "test" ? "Testing…" : "Test signal"}</button>
           {test && (
             <div style={{ marginTop: 8 }}>

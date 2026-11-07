@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { api, FieldSpec, MappingView, SaveResult, SourceInfo, Suggestion, SuggestResult } from "../api";
-import { go, label, Notice, SaveFeedback, useLoad } from "../ui";
+import { go, label, Notice, PageHead, SaveFeedback, Tip, useLoad } from "../ui";
 
 type Row = { expr: string; map: string; suggestion?: Suggestion };
 
@@ -36,12 +36,10 @@ function PickEntity({ source }: { source?: string }) {
   };
   return (
     <>
-      <div className="row">
-        <h2>Field mapping</h2>
-        <span className="spacer" />
+      <PageHead title="Field mapping" sub="Which field in each system means what."
+        help="The AI proposes a mapping from field names, labels, descriptions and sample values; you review and save it.">
         <button onClick={autoMap} disabled={mapping}>{mapping ? "Mapping…" : "Auto-map all fields"}</button>
-      </div>
-      <p className="lead">Tell the agent which field in each system means what. The AI proposes a mapping from field names, labels, descriptions and sample values; you review and save it.</p>
+      </PageHead>
       <Notice kind="ok">{note}</Notice>
       {sources.error && <Notice kind="bad">{sources.error}</Notice>}
       {sources.data?.sources.filter((s) => !source || s.name === source).map((s) => (
@@ -120,9 +118,9 @@ function EntityMapping({ source, entity }: { source: string; entity: string }) {
 
   return (
     <>
-      <p className="muted small"><a href="#/mapping">Field mapping</a> / {source}</p>
-      <h2>{label(entity)} from {source}</h2>
-      <p className="lead">{v.entity_description} Read {v.describe.sample_count} sample record(s) and {v.describe.fields.length} field(s).</p>
+      <p className="muted small"><a href="#/sources">← Back</a> · {source}</p>
+      <PageHead title={`${label(entity)} from ${source}`} sub={`${v.describe.sample_count} sample record(s), ${v.describe.fields.length} field(s) read.`}
+        help={v.entity_description} />
       {v.read_only && <Notice kind="warn">This data type combines several objects (e.g. tasks + meetings); its mapping is edited in the config file.</Notice>}
       <div className="row" style={{ marginBottom: 12 }}>
         <button className="primary" disabled={!!busy || v.read_only} onClick={() => runSuggest(true)}>{busy === "suggest" ? "Thinking…" : "Suggest with AI"}</button>
@@ -150,8 +148,7 @@ function EntityMapping({ source, entity }: { source: string; entity: string }) {
               return (
                 <tr key={f}>
                   <td>
-                    <strong>{f}</strong> <span className="badge">{doc.type}</span>
-                    <div className="muted small">{doc.description}</div>
+                    <strong>{f}</strong> <span className="badge">{doc.type}</span>{doc.description && <Tip>{doc.description}</Tip>}
                   </td>
                   <td>
                     <select
@@ -173,7 +170,7 @@ function EntityMapping({ source, entity }: { source: string; entity: string }) {
                       <input style={{ marginTop: 4 }} placeholder={`value map, e.g. ${picked?.options?.slice(0, 2).map((o) => `${o}=?`).join(", ") ?? "P1=urgent"}`}
                         value={r.map} disabled={v.read_only} onChange={(e) => setRow(f, { map: e.target.value })} />
                     ) : null}
-                    {picked?.description && <div className="muted small">{picked.description}</div>}
+                    {picked?.description && <span className="small muted">{picked.name}<Tip>{picked.description}</Tip></span>}
                   </td>
                   <td className="small">
                     {s ? (
@@ -181,7 +178,7 @@ function EntityMapping({ source, entity }: { source: string; entity: string }) {
                         <span className={s.confidence >= 0.85 ? "conf-hi" : s.confidence >= 0.6 ? "conf-mid" : "conf-lo"}>
                           {Math.round(s.confidence * 100)}% · {s.by}
                         </span>
-                        <div className="muted">{s.reason}</div>
+                        {s.reason && <Tip>{s.reason}</Tip>}
                         {s.warnings.map((w) => <div key={w} className="conf-lo">{w}</div>)}
                       </>
                     ) : <span className="muted">—</span>}
